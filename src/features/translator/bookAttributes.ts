@@ -93,6 +93,17 @@ export const BookAttributes = Extension.create({
           ]),
         ),
       },
+      {
+        types: ["table"],
+        attributes: {
+          border: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("border"),
+            renderHTML: (attributes: Record<string, unknown>) =>
+              typeof attributes.border === "string" ? { border: attributes.border } : {},
+          },
+        },
+      },
     ];
   },
 });

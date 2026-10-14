@@ -10,7 +10,13 @@ import type { ChapterContent } from "../../types/chapter";
 import { AiFixHtmlDialog } from "./AiFixHtmlDialog";
 import { AiGenerateDialog } from "./AiGenerateDialog";
 import { ChapterEditor } from "./ChapterEditor";
-import { comparableDocument, displayChapterImages, hasContent } from "./richText";
+import {
+  hasContent,
+  displayChapterImages,
+  normalizeFormattingWhitespace,
+  normalizeRichHtmlForEditor,
+  sameRichDocument,
+} from "./richText";
 import type { useChapterEditor } from "./useChapterEditor";
 
 export function TargetPane({
@@ -83,27 +89,24 @@ export function TargetPane({
       const validated = await validateChapterHtml(html);
       if (currentHtml.current !== html || destination.isDestroyed) return;
       const wrapper = document.createElement("div");
-      wrapper.innerHTML = validated;
-      const parsed = ProseMirrorParser.fromSchema(destination.schema).parse(wrapper, {
-        preserveWhitespace: true,
-      });
+      wrapper.innerHTML = normalizeRichHtmlForEditor(validated);
+      normalizeFormattingWhitespace(wrapper);
+      // Let the HTML parser collapse formatting whitespace normally. Preserving
+      // source indentation here turns each XHTML newline into an explicit break
+      // in headings and other inline containers.
+      const parsed = ProseMirrorParser.fromSchema(destination.schema).parse(wrapper);
       const roundTrip = document.createElement("div");
       roundTrip.append(
         DOMSerializer.fromSchema(destination.schema).serializeFragment(parsed.content),
       );
-      if (
-        validated.trim() !== "" &&
-        comparableDocument(validated) !== comparableDocument(roundTrip.innerHTML)
-      ) {
+      if (validated.trim() !== "" && !sameRichDocument(validated, roundTrip.innerHTML)) {
         setView("html");
         setViewError(
           "This HTML cannot be represented faithfully in rich text. Your code is kept; continue editing it here or adjust its structure.",
         );
         return;
       }
-      // Apply the exact document that passed the preservation check, rather
-      // than parsing the HTML a second time with different whitespace options.
-      destination.commands.setContent(parsed.toJSON(), { emitUpdate: false });
+      destination.commands.setContent(parsed, { emitUpdate: false });
       setView("rich");
     } catch (error) {
       if (currentHtml.current !== html || destination.isDestroyed) return;
@@ -123,7 +126,7 @@ export function TargetPane({
     // Ordinary editor keystrokes already updated the draft. Do not reload
     // those transactions: doing so would reset the caret and undo history.
     if (draftHtml.trim() === "" && activeEditor.isEmpty) return;
-    if (comparableDocument(draftHtml) === comparableDocument(displayed)) return;
+    if (sameRichDocument(draftHtml, displayed)) return;
     // AI insertion / external draft updates must refresh the mounted editor
     // through the same validation and preservation checks as HTML → Rich.
     void showRichText();

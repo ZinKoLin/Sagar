@@ -1365,6 +1365,9 @@ button {
 .chapter-editor :where(p) {
   margin: 0 0 1em;
 }
+.chapter-editor li > p {
+  margin-block: 0;
+}
 .chapter-editor img {
   max-width: 100%;
   height: auto;

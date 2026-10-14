@@ -96,6 +96,7 @@ fn is_xhtml_document_tag(tag: &str) -> bool {
             | "header"
             | "footer"
             | "aside"
+            | "nav"
             | "figure"
             | "figcaption"
             | "pre"
@@ -145,6 +146,7 @@ fn is_xhtml_block(tag: &str) -> bool {
             | "header"
             | "footer"
             | "aside"
+            | "nav"
             | "figure"
             | "figcaption"
             | "pre"
@@ -406,7 +408,7 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
             // This is the rejection the AI dialog surfaces. Name the element
             // so Retry can drop/convert exactly this tag.
             return Err(invalid_detail(format!(
-                "Unsupported <{tag}>{ns_label}> element."
+                "Unsupported <{tag}>{ns_label} element."
             )));
         }
         if document {
@@ -637,6 +639,18 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
             if attr_ns == Some("http://www.w3.org/XML/1998/namespace") && attr_name == "lang" {
                 html.push_str(&format!(" xml:lang=\"{}\"", escape_html_text(attr.value())));
                 continue;
+            }
+            if tag == "table" && attr_name == "border" {
+                if attr
+                    .value()
+                    .parse::<u16>()
+                    .ok()
+                    .is_none_or(|border| border > 100)
+                {
+                    return Err(invalid_detail(
+                        "Table border must be an integer from 0 to 100.".to_string(),
+                    ));
+                }
             }
             if matches!(attr_name, "colspan" | "rowspan")
                 && attr
@@ -932,6 +946,23 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
             ));
         };
         let property_name = property.trim().to_ascii_lowercase();
+        let ligature_value = property_name == "font-variant-ligatures"
+            && !value.trim().is_empty()
+            && value.trim().split_ascii_whitespace().all(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "normal"
+                        | "none"
+                        | "common-ligatures"
+                        | "no-common-ligatures"
+                        | "discretionary-ligatures"
+                        | "no-discretionary-ligatures"
+                        | "historical-ligatures"
+                        | "no-historical-ligatures"
+                        | "contextual"
+                        | "no-contextual"
+                )
+            });
         let color_function = matches!(property_name.as_str(), "color" | "background-color")
             && ["rgb(", "rgba(", "hsl(", "hsla("].iter().any(|prefix| {
                 value
@@ -952,6 +983,7 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
                 | "background-color"
                 | "font-weight"
                 | "font-style"
+                | "font-variant-ligatures"
                 | "font-size"
                 | "font-family"
                 | "line-height"
@@ -960,7 +992,8 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
                 | "text-indent"
                 | "letter-spacing"
                 | "word-spacing"
-        ) || value.contains(['@', '\\', '<', '>'])
+        ) || property_name == "font-variant-ligatures" && !ligature_value
+            || value.contains(['@', '\\', '<', '>'])
             || value.contains(['(', ')']) && !color_function
         {
             return Err(AppError::new(
