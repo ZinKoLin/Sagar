@@ -36,6 +36,22 @@ export function inlineFragment(html: string): string {
   return Array.from(doc.body.childNodes).map(serialize).join("<br/><br/>");
 }
 
+/** Inline EPUB chapter images for the editor; stored/exported paths stay local data. */
+export function displayChapterImages(
+  html: string,
+  images: { src: string; source: string }[],
+): string {
+  if (!html || images.length === 0) return html;
+  const sources = new Map(images.map((image) => [image.source, image.src]));
+  const document = new DOMParser().parseFromString(html, "text/html");
+  for (const image of document.querySelectorAll("img[src]")) {
+    const source = image.getAttribute("src");
+    const embedded = source ? sources.get(source) : undefined;
+    if (embedded) image.setAttribute("src", embedded);
+  }
+  return document.body.innerHTML;
+}
+
 /**
  * Canonical document XHTML: retain the reader's block structure (including
  * original div/figure/section wrappers) and SVG cover artwork so the

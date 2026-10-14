@@ -10,7 +10,7 @@ import type { ChapterContent } from "../../types/chapter";
 import { AiFixHtmlDialog } from "./AiFixHtmlDialog";
 import { AiGenerateDialog } from "./AiGenerateDialog";
 import { ChapterEditor } from "./ChapterEditor";
-import { comparableDocument, hasContent } from "./richText";
+import { comparableDocument, displayChapterImages, hasContent } from "./richText";
 import type { useChapterEditor } from "./useChapterEditor";
 
 export function TargetPane({
@@ -44,6 +44,9 @@ export function TargetPane({
   viewRef.current = view;
   const currentHtml = useRef("");
   const draftHtml = editor.draft?.html ?? content?.document.html ?? "";
+  const richEditorHtml = content
+    ? displayChapterImages(draftHtml, content.images)
+    : draftHtml;
   currentHtml.current = draftHtml;
   const fileInput = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -583,7 +586,7 @@ export function TargetPane({
             <div hidden={view === "html"}>
               <ChapterEditor
                 key={content.chapterId}
-                html={editor.draft?.html ?? content.document.html ?? ""}
+                html={richEditorHtml}
                 disabled={editor.draft?.conflict ?? false}
                 onChange={editor.setHtml}
                 onReady={setActiveEditor}

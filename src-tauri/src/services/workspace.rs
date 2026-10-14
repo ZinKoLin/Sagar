@@ -123,10 +123,12 @@ pub fn get_chapter(
             "data:{mime};base64,{}",
             base64::engine::general_purpose::STANDARD.encode(bytes)
         );
-        if !content.images.iter().any(|image| image.src == src) {
-            content
-                .images
-                .push(crate::domain::ChapterImage { src, alt });
+        if !content.images.iter().any(|image| image.source == raw_src) {
+            content.images.push(crate::domain::ChapterImage {
+                src,
+                source: raw_src,
+                alt,
+            });
         }
     }
     Ok(content)

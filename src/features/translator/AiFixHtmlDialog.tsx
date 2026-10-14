@@ -343,7 +343,7 @@ export function AiFixHtmlDialog({
             ) : null}
             {running ? (
               <StatusNotice kind="loading">
-                Repairing… ({elapsed}s elapsed — this can take up to 30 minutes)
+                Repairing… ({elapsed}s elapsed — this can take up to 60 minutes)
               </StatusNotice>
             ) : null}
             {running && stalledSecs >= STALL_WARNING_AFTER_SECS ? (

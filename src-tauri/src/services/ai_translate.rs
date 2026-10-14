@@ -27,9 +27,9 @@ use crate::services::ai as ai_settings;
 use crate::storage::ai_translate;
 
 /// Hard deadline for one chapter run; users can always cancel earlier.
-/// Thirty minutes covers long chapters and slow connections (all agents —
+/// One hour covers long chapters and slow connections (all agents —
 /// Codex, OpenCode, Claude Code — share this path, as does AI HTML fix).
-const TRANSLATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+const TRANSLATION_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// How often a running child is polled for cancel/deadline.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Refuse chapters (or proposals) that would make prompts/outputs unbounded.
@@ -392,7 +392,7 @@ pub(crate) fn execute_streaming(
             let _ = child.wait();
             return Err(AppError::new(
                 "translation_timeout",
-                "The translation took longer than 30 minutes and was stopped. Slow connections can stall output for minutes; retrying keeps any complete sections.",
+                "The translation took longer than 60 minutes and was stopped. Slow connections can stall output for minutes; retrying keeps any complete sections.",
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -1113,10 +1113,10 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
-    fn translation_deadline_is_thirty_minutes() {
+    fn translation_deadline_is_one_hour() {
         // Long chapters and slow connections need headroom; the dialogs
         // advertise this deadline and warn on stalls before it.
-        assert_eq!(TRANSLATION_TIMEOUT, Duration::from_secs(30 * 60));
+        assert_eq!(TRANSLATION_TIMEOUT, Duration::from_secs(60 * 60));
     }
 
     #[test]

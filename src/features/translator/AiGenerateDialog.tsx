@@ -242,7 +242,7 @@ export function AiGenerateDialog({
   }, [chapterId]);
 
   // Elapsed + stall tickers while a run is in flight; translation can take
-  // up to 30 minutes, and slow connections can stall output for minutes.
+  // up to 60 minutes, and slow connections can stall output for minutes.
   useEffect(() => {
     if (phase !== "running") {
       setElapsed(0);
@@ -470,7 +470,7 @@ export function AiGenerateDialog({
             ) : null}
             {running ? (
               <StatusNotice kind="loading">
-                Translating… ({elapsed}s elapsed — this can take up to 30 minutes)
+                Translating… ({elapsed}s elapsed — this can take up to 60 minutes)
               </StatusNotice>
             ) : null}
             {running && stalledSecs >= STALL_WARNING_AFTER_SECS ? (

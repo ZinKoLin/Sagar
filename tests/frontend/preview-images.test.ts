@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { Window } from "happy-dom";
+import { displayChapterImages } from "../../src/features/translator/richText";
 import { preparePreviewImages } from "../../src/lib/tauri/preview";
 
 test("converts HTML and SVG cover images to native resource URLs", () => {
@@ -21,6 +22,28 @@ test("converts HTML and SVG cover images to native resource URLs", () => {
     expect(output).toContain('href="http://epubres.localhost/project/OEBPS/cover.jpg"');
     expect(output).not.toContain("epubres://");
     expect(output).toContain('viewBox="0 0 800 1104"');
+  } finally {
+    globalThis.DOMParser = previous;
+    window.happyDOM.abort();
+  }
+});
+
+test("shows source EPUB images in the translation rich editor", () => {
+  const window = new Window();
+  const previous = globalThis.DOMParser;
+  globalThis.DOMParser = window.DOMParser as unknown as typeof DOMParser;
+  try {
+    const output = displayChapterImages(
+      '<section><p>Text</p><img src="../images/figure.png" alt="Figure"/></section>',
+      [
+        {
+          source: "../images/figure.png",
+          src: "data:image/png;base64,AA==",
+        },
+      ],
+    );
+    expect(output).toContain('src="data:image/png;base64,AA=="');
+    expect(output).toContain('alt="Figure"');
   } finally {
     globalThis.DOMParser = previous;
     window.happyDOM.abort();
