@@ -10,6 +10,7 @@ const KEYS = {
   zoom: "sagar.textZoom",
   sidebarWidth: "sagar.sidebarWidth",
   sourceWidth: "sagar.sourceWidth",
+  translationTimeout: "sagar.aiTranslation.timeoutMinutes.v1",
 } as const;
 
 function read(key: string): string | null {
@@ -44,6 +45,18 @@ export function loadTextZoom(): number {
 
 export function saveTextZoom(size: number): void {
   write(KEYS.zoom, String(size));
+}
+
+export function loadTranslationTimeout(): number {
+  const stored = read(KEYS.translationTimeout);
+  if (stored === null) return 120;
+  const minutes = Number(stored);
+  return [0, 60, 120, 240].includes(minutes) ? minutes : 120;
+}
+
+export function saveTranslationTimeout(minutes: number): void {
+  if ([0, 60, 120, 240].includes(minutes))
+    write(KEYS.translationTimeout, String(minutes));
 }
 
 function clampWidth(value: number, min: number, max: number): number {

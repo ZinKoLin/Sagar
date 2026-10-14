@@ -7,6 +7,18 @@ export const BookAttributes = Extension.create({
     return [
       {
         types: [
+          "bookDiv",
+          "bookSection",
+          "bookFigure",
+          "bookFigcaption",
+          "bookFigcaptionBlocks",
+          "bookSpan",
+          "bookBold",
+          "bookItalic",
+          "bookSuperscript",
+          "bookSubscript",
+          "bookAnchor",
+          "bookBlockAnchor",
           "paragraph",
           "table",
           "tableRow",
@@ -26,16 +38,31 @@ export const BookAttributes = Extension.create({
           "strike",
         ],
         attributes: Object.fromEntries(
-          ["class", "id", "style", "title", "lang", "dir"].map((name) => [
-            name,
-            {
-              default: null,
-              parseHTML: (element: HTMLElement) => element.getAttribute(name),
-              renderHTML: (attributes: Record<string, unknown>) =>
-                typeof attributes[name] === "string" ? { [name]: attributes[name] } : {},
-            },
-          ]),
+          ["class", "id", "style", "title", "lang", "dir", "epub:type", "role"].map(
+            (name) => [
+              name,
+              {
+                default: null,
+                parseHTML: (element: HTMLElement) => element.getAttribute(name),
+                renderHTML: (attributes: Record<string, unknown>) =>
+                  typeof attributes[name] === "string"
+                    ? { [name]: attributes[name] }
+                    : {},
+              },
+            ],
+          ),
         ),
+      },
+      {
+        types: ["table"],
+        attributes: {
+          border: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("border"),
+            renderHTML: (attributes: Record<string, unknown>) =>
+              typeof attributes.border === "string" ? { border: attributes.border } : {},
+          },
+        },
       },
     ];
   },

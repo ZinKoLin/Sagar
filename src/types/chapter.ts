@@ -28,7 +28,7 @@ export type ChapterContent = {
   blocks: BlockView[];
   sourceDocument: string;
   previewHtml: string;
-  images: { src: string; alt: string }[];
+  images: { src: string; source: string; alt: string }[];
   document: {
     html: string | null;
     status: BlockStatus;

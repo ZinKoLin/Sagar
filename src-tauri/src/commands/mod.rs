@@ -337,6 +337,7 @@ pub async fn start_ai_translation(
     previous_output: Option<String>,
     current_instructions: Option<String>,
     reasoning_effort: Option<String>,
+    timeout_minutes: Option<u32>,
 ) -> Result<AiTranslationStart, AppError> {
     let data_dir = app_data_dir(&app)?;
     let emitter = app.clone();
@@ -351,6 +352,7 @@ pub async fn start_ai_translation(
                 previous_output,
                 current_instructions,
                 reasoning_effort,
+                timeout_minutes,
             },
             move |event: AiTranslationEvent| {
                 let _ = emitter.emit("ai-translation-event", event);

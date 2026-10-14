@@ -106,6 +106,7 @@ pub fn get_chapter(
         if !content.images.iter().any(|image| image.src == src) {
             content.images.push(crate::domain::ChapterImage {
                 src,
+                source: img.attribute("src").unwrap_or_default().to_string(),
                 alt: img.attribute("alt").unwrap_or("Chapter image").to_string(),
             });
         }

@@ -841,6 +841,123 @@ fn authored_tables_save_reload_export_and_reopen() {
 }
 
 #[test]
+fn epub_pagebreak_wrappers_save_reload_export_and_reopen() {
+    let dir = tempdir();
+    let data_dir = tempdir();
+    let fragment = include_str!("../../tests/fixtures/ai/pagebreak-wrapper.xhtml");
+    let mut files = rich_book_files();
+    files
+        .iter_mut()
+        .find(|(name, _)| name == "OEBPS/ch1.xhtml")
+        .expect("source chapter")
+        .1 = chapter_doc("Dedication", &fragment.replace("မြန်မာစာ", "English text")).into_bytes();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let source = write_epub(&dir, "pagebreak.epub", &refs);
+    let original = std::fs::read(&source).expect("original bytes");
+    let book = import_rich_book(&data_dir, &source);
+    services::workspace::save_chapter_document(
+        &data_dir,
+        &book.chapter_ids[0],
+        Some(fragment.into()),
+        "reviewed",
+        0,
+    )
+    .expect("save pagebreak draft");
+    let loaded =
+        services::workspace::get_chapter(&data_dir, &book.project_id, &book.chapter_ids[0])
+            .expect("reload draft");
+    assert!(
+        loaded
+            .document
+            .html
+            .as_deref()
+            .expect("saved HTML")
+            .contains("epub:type=\"pagebreak\"")
+    );
+    let destination = dir.join("translated-pagebreak.epub");
+    services::export::export_epub(
+        &data_dir,
+        ExportRequest {
+            project_id: book.project_id.clone(),
+            destination: destination.clone(),
+            mode: "draft".into(),
+            title: None,
+            language: None,
+            include_original: true,
+        },
+    )
+    .expect("export pagebreak draft");
+    epub::export::validate_output(&destination).expect("valid output");
+    let mut archive =
+        zip::ZipArchive::new(std::fs::File::open(&destination).expect("output")).expect("zip");
+    let mut chapter = String::new();
+    archive
+        .by_name("OEBPS/ch1.xhtml")
+        .expect("chapter")
+        .read_to_string(&mut chapter)
+        .expect("read chapter");
+    let parsed = roxmltree::Document::parse(&chapter).expect("valid XHTML");
+    for id in ["idParaDest-3", "inline-anchor", "section-anchor"] {
+        assert_eq!(
+            parsed
+                .descendants()
+                .filter(|node| node.attribute("id") == Some(id))
+                .count(),
+            1,
+            "empty destination anchor is preserved exactly once"
+        );
+    }
+    for id in ["page_v", "page_vi"] {
+        let nodes: Vec<_> = parsed
+            .descendants()
+            .filter(|node| node.attribute("id") == Some(id))
+            .collect();
+        assert_eq!(nodes.len(), 1, "pagebreak anchor is preserved exactly once");
+        assert_eq!(
+            nodes[0].attribute(("http://www.idpf.org/2007/ops", "type")),
+            Some("pagebreak")
+        );
+        assert_eq!(nodes[0].attribute("role"), Some("doc-pagebreak"));
+    }
+    assert!(chapter.contains("မြန်မာစာ"));
+    assert!(chapter.contains("<b class=\"legacy-bold\">အထူ <i>စောင်း</i></b>"));
+    let reference = parsed
+        .descendants()
+        .find(|node| node.attribute("id") == Some("footnote-reference"))
+        .expect("superscript footnote reference");
+    assert!(reference.has_tag_name(("http://www.w3.org/1999/xhtml", "sup")));
+    assert!(
+        reference
+            .children()
+            .any(|node| node.attribute("href") == Some("#footnote")
+                && node.attribute(("http://www.idpf.org/2007/ops", "type")) == Some("noteref"))
+    );
+    assert!(parsed.descendants().any(|node| {
+        node.has_tag_name(("http://www.w3.org/1999/xhtml", "sub")) && node.text() == Some("2")
+    }));
+    let section = parsed
+        .descendants()
+        .find(|node| node.attribute("id") == Some("chapter-section"))
+        .expect("chapter section");
+    assert!(section.has_tag_name(("http://www.w3.org/1999/xhtml", "section")));
+    assert_eq!(
+        section.attribute(("http://www.idpf.org/2007/ops", "type")),
+        Some("chapter")
+    );
+    assert!(
+        section
+            .descendants()
+            .any(|node| node.attribute("id") == Some("nested-section"))
+    );
+    assert!(chapter.contains("class=\"dedication\""));
+    services::import::import_epub(&data_dir, &destination, true).expect("reimport translated EPUB");
+    assert_eq!(std::fs::read(&source).expect("unchanged source"), original);
+}
+
+#[test]
 fn draft_export_without_originals_omits_untranslated_chapters() {
     let dir = tempdir();
     let data_dir = tempdir();

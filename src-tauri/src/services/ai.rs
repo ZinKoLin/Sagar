@@ -48,20 +48,17 @@ fn open_settings_db(data_dir: &Path) -> Result<rusqlite::Connection, AppError> {
 /// use executable extensions; other systems use the bare name plus the
 /// platform executable suffix.
 fn candidate_file_names(binary: &str) -> Vec<OsString> {
-    let mut names = vec![OsString::from(binary)];
-    let exe_suffix = std::env::consts::EXE_SUFFIX;
-    if !exe_suffix.is_empty() {
-        names.push(OsString::from(format!("{binary}{exe_suffix}")));
-    }
     if cfg!(windows) {
-        for extension in [".cmd", ".bat"] {
-            let candidate = format!("{binary}{extension}");
-            if !names.iter().any(|name| name.to_string_lossy() == candidate) {
-                names.push(OsString::from(candidate));
-            }
-        }
+        // npm installs an extensionless POSIX shell shim alongside Windows
+        // shims. Prefer files Windows can execute or invoke through PowerShell.
+        [".exe", ".cmd", ".bat", ".ps1"]
+            .into_iter()
+            .map(|extension| OsString::from(format!("{binary}{extension}")))
+            .chain(std::iter::once(OsString::from(binary)))
+            .collect()
+    } else {
+        vec![OsString::from(binary)]
     }
-    names
 }
 
 fn find_on_path_in(directories: &[PathBuf], binary: &str) -> Option<PathBuf> {
@@ -103,9 +100,54 @@ fn run_cli_output(
     args: &[&str],
     timeout: Duration,
 ) -> Result<std::process::Output, AppError> {
-    let mut command = std::process::Command::new(binary);
+    #[cfg(windows)]
+    let mut command = {
+        let is_windows_script = binary.extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("cmd")
+                || ext.eq_ignore_ascii_case("bat")
+                || ext.eq_ignore_ascii_case("ps1")
+        });
+        if is_windows_script {
+            // npm command shims are batch files, not PE executables. PowerShell
+            // invokes them while passing arguments as JSON data, not script text.
+            let serialized_args = serde_json::to_string(args)
+                .map_err(|_| AppError::new("cli_check_failed", "The tool could not be started."))?;
+            let powershell = std::env::var_os("SystemRoot")
+                .map(PathBuf::from)
+                .map(|root| {
+                    root.join("System32")
+                        .join("WindowsPowerShell")
+                        .join("v1.0")
+                        .join("powershell.exe")
+                })
+                .unwrap_or_else(|| PathBuf::from("powershell.exe"));
+            let mut command = std::process::Command::new(powershell);
+            command
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "$cliArgs = $env:SAGAR_CLI_ARGS | ConvertFrom-Json; & $env:SAGAR_CLI_BINARY @cliArgs; exit $LASTEXITCODE",
+                ])
+                .env("SAGAR_CLI_BINARY", binary)
+                .env("SAGAR_CLI_ARGS", serialized_args);
+            command
+        } else {
+            let mut command = std::process::Command::new(binary);
+            command.args(args);
+            command
+        }
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = std::process::Command::new(binary);
+        command.args(args);
+        command
+    };
     command
-        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -1166,6 +1208,20 @@ opencode/no-adjustment
         assert_eq!(found, binary);
         assert!(find_on_path_in(&[dir.path().to_path_buf()], "ghost").is_none());
         assert!(find_on_path_in(&[], "codex").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn path_lookup_prefers_windows_shims_over_extensionless_unix_scripts() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let unix_script = dir.path().join("codex");
+        let windows_shim = dir.path().join("codex.cmd");
+        std::fs::write(&unix_script, b"#!/bin/sh\n").expect("stage Unix shim");
+        std::fs::write(&windows_shim, b"@echo off\n").expect("stage Windows shim");
+
+        let found =
+            find_on_path_in(&[dir.path().to_path_buf()], "codex").expect("Windows shim found");
+        assert_eq!(found, windows_shim);
     }
 
     #[test]

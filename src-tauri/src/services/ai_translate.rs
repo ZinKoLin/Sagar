@@ -26,8 +26,20 @@ use crate::error::AppError;
 use crate::services::ai as ai_settings;
 use crate::storage::ai_translate;
 
-/// Hard deadline for one chapter run; users can always cancel earlier.
-const TRANSLATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+/// HTML repair keeps a bounded deadline; chapter translation is user-configurable.
+const REPAIR_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
+fn translation_timeout(minutes: Option<u32>) -> Result<Duration, AppError> {
+    let minutes = minutes.unwrap_or(120);
+    if minutes > 24 * 60 {
+        return Err(AppError::new(
+            "invalid_timeout",
+            "Choose a time limit up to 24 hours, or no time limit.",
+        ));
+    }
+    // Zero explicitly disables the deadline. Cancellation and output limits remain.
+    Ok(Duration::from_secs(u64::from(minutes) * 60))
+}
 /// How often a running child is polled for cancel/deadline.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
 /// Refuse chapters (or proposals) that would make prompts/outputs unbounded.
@@ -37,6 +49,11 @@ const MAX_OUTPUT_BYTES: usize = 1_000_000;
 /// How much tool stderr (if any) accompanies a failure message. Shown locally
 /// only, truncated; never logged or telemetered.
 const MAX_STDERR_CHARS: usize = 500;
+/// EPUB XHTML commonly declares these prefixes on the outer `<html>` element.
+/// Chapter-body fragments have that ancestor removed, so the synthetic XML
+/// wrapper must restore the declarations before parsing the fragment.
+const FRAGMENT_WRAPPER_OPEN: &str =
+    "<w xmlns:epub=\"http://www.idpf.org/2007/ops\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">";
 
 pub struct StartTranslationInput {
     pub chapter_id: String,
@@ -46,6 +63,7 @@ pub struct StartTranslationInput {
     pub previous_output: Option<String>,
     pub current_instructions: Option<String>,
     pub reasoning_effort: Option<String>,
+    pub timeout_minutes: Option<u32>,
 }
 
 struct ActiveJob {
@@ -125,8 +143,9 @@ pub fn build_html_fix_prompt(html: &str) -> String {
            blockquote, table, thead, tbody, tfoot, tr, td, th, strong, em, u, s,\n\
            img, br, hr and a. Unwrap or convert any other element (div, span,\n\
            section, article, font, etc.) without dropping its text.\n\
-         - Keep every img src/alt and every a href; keep id, class, style,\n\
-           title, lang, dir, colspan, rowspan and start attributes where valid.\n\
+         - Keep every img src/alt and every a href; keep table border, id,\n\
+           class, style, title, lang, dir, colspan, rowspan and start attributes\n\
+           where valid.\n\
          - Never nest block elements (p, h1-h6, ul, ol, blockquote, table)\n\
            inside p; move trailing hr elements outside their paragraph.\n\
          - Output only the fixed HTML fragment: no explanations, no\n\
@@ -157,7 +176,7 @@ fn continuation_parts(original: &str, previous: &str) -> Result<(String, String)
         ));
     }
     let previous = strip_code_fences(previous);
-    let wrapped = format!("<w>{original}</w>");
+    let wrapped = format!("{FRAGMENT_WRAPPER_OPEN}{original}</w>");
     let source = roxmltree::Document::parse(&wrapped).map_err(|_| {
         AppError::new(
             "proposal_structure",
@@ -190,7 +209,7 @@ fn continuation_parts(original: &str, previous: &str) -> Result<(String, String)
         let Some(node) = elements.get(count) else {
             break;
         };
-        let source_end = node.range().end - 3; // opening <w> wrapper
+        let source_end = node.range().end - FRAGMENT_WRAPPER_OPEN.len();
         if check_skeleton(&original[..source_end], candidate).is_err() {
             break;
         }
@@ -200,7 +219,7 @@ fn continuation_parts(original: &str, previous: &str) -> Result<(String, String)
     let source_end = count
         .checked_sub(1)
         .and_then(|i| elements.get(i))
-        .map(|n| n.range().end - 3)
+        .map(|n| n.range().end - FRAGMENT_WRAPPER_OPEN.len())
         .unwrap_or(0);
     Ok((
         previous[..end].to_string(),
@@ -271,6 +290,28 @@ pub(crate) struct StreamResult {
     pub stderr: Vec<u8>,
 }
 
+/// A Windows npm shim launches PowerShell, node and the native CLI as a tree.
+/// Killing only the shim leaves the translation running after Cancel/timeout.
+fn stop_child(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .map(|root| root.join("System32").join("taskkill.exe"))
+            .unwrap_or_else(|| PathBuf::from("taskkill.exe"));
+        let _ = std::process::Command::new(taskkill)
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Spawns `binary` with fixed args in `work_dir`, streaming stdout chunks to
 /// `on_chunk` as they arrive while polling the shared cancel flag and a hard
 /// deadline. The child is single-owned here: cancel/timeout/oversize kills
@@ -284,19 +325,86 @@ pub(crate) fn execute_streaming(
     timeout: Duration,
     mut on_chunk: impl FnMut(&[u8]),
 ) -> Result<StreamResult, AppError> {
-    use std::io::Read as _;
+    use std::io::{Read as _, Write as _};
 
     let failed = |message: &str| AppError::new("translation_failed", message.to_string());
-    let mut command = std::process::Command::new(binary);
+    #[cfg(windows)]
+    let (mut command, stdin_prompt) = {
+        let mut command_args = args.to_vec();
+        let is_windows_script = binary.extension().is_some_and(|ext| {
+            ext.eq_ignore_ascii_case("cmd")
+                || ext.eq_ignore_ascii_case("bat")
+                || ext.eq_ignore_ascii_case("ps1")
+        });
+        if is_windows_script && args.first().is_some_and(|arg| arg == "exec") {
+            // npm installs Codex as a .cmd shim, which CreateProcess cannot
+            // launch directly. Invoke it through PowerShell with arguments
+            // passed as JSON data, and send the potentially untrusted book
+            // prompt over stdin instead of through the shell command line.
+            let prompt = command_args.pop().unwrap_or_default();
+            command_args.push("-".to_string());
+            let serialized_args = serde_json::to_string(&command_args)
+                .map_err(|_| failed("The translation tool could not be started."))?;
+            let powershell = std::env::var_os("SystemRoot")
+                .map(PathBuf::from)
+                .map(|root| {
+                    root.join("System32")
+                        .join("WindowsPowerShell")
+                        .join("v1.0")
+                        .join("powershell.exe")
+                })
+                .unwrap_or_else(|| PathBuf::from("powershell.exe"));
+            let mut command = std::process::Command::new(powershell);
+            command
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    "$cliArgs = $env:SAGAR_CLI_ARGS | ConvertFrom-Json; & $env:SAGAR_CLI_BINARY @cliArgs; exit $LASTEXITCODE",
+                ])
+                .env("SAGAR_CLI_BINARY", binary)
+                .env("SAGAR_CLI_ARGS", serialized_args);
+            (command, Some(prompt))
+        } else {
+            let mut command = std::process::Command::new(binary);
+            command.args(args);
+            (command, None)
+        }
+    };
+    #[cfg(not(windows))]
+    let (mut command, stdin_prompt) = {
+        let mut command = std::process::Command::new(binary);
+        command.args(args);
+        (command, None::<String>)
+    };
     command
-        .args(args)
         .current_dir(work_dir)
-        .stdin(std::process::Stdio::null())
+        .stdin(if stdin_prompt.is_some() {
+            std::process::Stdio::piped()
+        } else {
+            std::process::Stdio::null()
+        })
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut child = command
-        .spawn()
-        .map_err(|_| failed("The translation tool could not be started."))?;
+    let mut child = command.spawn().map_err(|error| {
+        failed(&format!(
+            "The translation tool could not be started ({:?}, Windows code {:?}).",
+            error.kind(),
+            error.raw_os_error()
+        ))
+    })?;
+    if let Some(prompt) = stdin_prompt {
+        let Some(mut stdin) = child.stdin.take() else {
+            stop_child(&mut child);
+            return Err(failed("The translation tool could not be started."));
+        };
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(prompt.as_bytes());
+        });
+    }
 
     // Reader threads own their pipes; the main loop owns the child handle.
     let stdout_pipe = child.stdout.take();
@@ -328,14 +436,13 @@ pub(crate) fn execute_streaming(
         let _ = err_tx.send(collected);
     });
 
-    let deadline = Instant::now() + timeout;
+    let deadline = (!timeout.is_zero()).then(|| Instant::now() + timeout);
     let mut collected = Vec::new();
     loop {
         while let Ok(chunk) = out_rx.try_recv() {
             collected.extend_from_slice(&chunk);
             if collected.len() > MAX_OUTPUT_BYTES {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_child(&mut child);
                 return Err(AppError::new(
                     "proposal_too_large",
                     "The proposal was too large to use safely.",
@@ -347,25 +454,22 @@ pub(crate) fn execute_streaming(
             Ok(Some(_)) => break,
             Ok(None) => {}
             Err(_) => {
-                let _ = child.kill();
-                let _ = child.wait();
+                stop_child(&mut child);
                 return Err(failed("The translation tool reported an error."));
             }
         }
         if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            let _ = child.wait();
+            stop_child(&mut child);
             return Err(AppError::new(
                 "translation_cancelled",
                 "The run was cancelled.",
             ));
         }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            stop_child(&mut child);
             return Err(AppError::new(
                 "translation_timeout",
-                "The translation took too long and was stopped.",
+                "The translation reached its time limit and was stopped. Retry to reuse any completed sections, or choose a lower reasoning effort for a long chapter.",
             ));
         }
         std::thread::sleep(POLL_INTERVAL);
@@ -417,7 +521,7 @@ fn ensure_success(result: &StreamResult) -> Result<(), AppError> {
 /// XHTML defect. Preserve every byte except the position of the closing tag.
 /// Other invalid nesting remains rejected by the restricted editor validator.
 fn normalize_trailing_rules(fragment: &str) -> Result<String, AppError> {
-    let opening = "<w xmlns=\"http://www.w3.org/1999/xhtml\">";
+    let opening = "<w xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">";
     let wrapped = format!("{opening}{fragment}</w>");
     let doc = roxmltree::Document::parse(&wrapped).map_err(|error| {
         AppError::new(
@@ -539,7 +643,7 @@ fn skeleton(fragment: &str) -> Result<ElementSkeleton, AppError> {
             "The chapter markup could not be compared safely. Nothing was inserted.",
         )
     };
-    let wrapped = format!("<w>{fragment}</w>");
+    let wrapped = format!("{FRAGMENT_WRAPPER_OPEN}{fragment}</w>");
     let doc = roxmltree::Document::parse(&wrapped).map_err(|_| uncomparable())?;
     let mut elements = Vec::new();
     for node in doc
@@ -585,7 +689,7 @@ fn check_skeleton(original: &str, proposal: &str) -> Result<(), AppError> {
 /// them back). Unresolvable sources stay untouched — the original files are
 /// preserved in the package, so they still resolve on export.
 fn embed_proposal_images(html: &str, snapshot_path: &Path, chapter_href: &str) -> String {
-    let wrapped = format!("<w>{html}</w>");
+    let wrapped = format!("{FRAGMENT_WRAPPER_OPEN}{html}</w>");
     let Ok(doc) = roxmltree::Document::parse(&wrapped) else {
         return html.to_string();
     };
@@ -693,6 +797,7 @@ where
             "Confirm that the chapter text may be sent to the translation tool.",
         ));
     }
+    let timeout = translation_timeout(input.timeout_minutes)?;
     let agent = ai_settings::TranslationAgent::parse(&input.agent).ok_or_else(|| {
         AppError::new(
             "invalid_agent",
@@ -815,27 +920,20 @@ where
         let outcome = if !prefix.is_empty() && remaining.trim().is_empty() {
             validate_proposal(prefix.as_bytes())
         } else {
-            execute_streaming(
-                &binary,
-                &args,
-                &work_dir,
-                &job.cancel,
-                TRANSLATION_TIMEOUT,
-                |chunk| {
-                    streamed.extend_from_slice(chunk);
-                    if last_emit.elapsed() >= STREAM_EMIT_INTERVAL {
-                        last_emit = Instant::now();
-                        emit(event(
-                            &thread_job_id,
-                            &chapter_id,
-                            "stream",
-                            None,
-                            Some(String::from_utf8_lossy(&streamed).to_string()),
-                            String::new(),
-                        ));
-                    }
-                },
-            )
+            execute_streaming(&binary, &args, &work_dir, &job.cancel, timeout, |chunk| {
+                streamed.extend_from_slice(chunk);
+                if last_emit.elapsed() >= STREAM_EMIT_INTERVAL {
+                    last_emit = Instant::now();
+                    emit(event(
+                        &thread_job_id,
+                        &chapter_id,
+                        "stream",
+                        None,
+                        Some(String::from_utf8_lossy(&streamed).to_string()),
+                        String::new(),
+                    ));
+                }
+            })
             .and_then(|result| ensure_success(&result).map(|_| result))
             .and_then(|result| {
                 let decoded = String::from_utf8_lossy(&result.stdout);
@@ -987,7 +1085,7 @@ where
             &args,
             &work_dir,
             &job.cancel,
-            TRANSLATION_TIMEOUT,
+            REPAIR_TIMEOUT,
             |chunk| {
                 streamed.extend_from_slice(chunk);
                 if last_emit.elapsed() >= STREAM_EMIT_INTERVAL {
@@ -1055,6 +1153,32 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     #[test]
+    fn time_limit_inputs_support_extended_and_explicit_unlimited_runs() {
+        assert_eq!(
+            translation_timeout(None).expect("default"),
+            Duration::from_secs(120 * 60)
+        );
+        assert_eq!(
+            translation_timeout(Some(240)).expect("four hours"),
+            Duration::from_secs(240 * 60)
+        );
+        assert_eq!(
+            translation_timeout(Some(0)).expect("unlimited"),
+            Duration::ZERO
+        );
+        assert_eq!(
+            translation_timeout(Some(1440)).expect("maximum"),
+            Duration::from_secs(1440 * 60)
+        );
+        assert_eq!(
+            translation_timeout(Some(1441))
+                .expect_err("invalid limit")
+                .code,
+            "invalid_timeout"
+        );
+    }
+
+    #[test]
     fn prompts_combine_book_and_current_guidance_with_preservation_rules() {
         let prompt = build_book_translation_prompt(
             Some("en"),
@@ -1079,6 +1203,47 @@ mod tests {
         assert!(prompt.contains("Do NOT translate"));
         assert!(prompt.contains("p, h1"));
         assert!(prompt.contains("Output only the fixed HTML fragment"));
+    }
+
+    #[test]
+    fn epub_pagebreak_wrapper_proposal_is_valid_savable_and_retryable() {
+        let proposal = include_str!("../../../tests/fixtures/ai/pagebreak-wrapper.xhtml");
+        let original = proposal.replace("မြန်မာစာ", "English text");
+        let validated = validate_proposal(proposal.as_bytes()).expect("EPUB proposal");
+        check_skeleton(&original, &validated).expect("preserved source structure");
+        assert!(validated.contains("epub:type=\"pagebreak\""));
+        assert!(validated.contains("id=\"page_v\""));
+        assert!(validated.contains("id=\"page_vi\""));
+        assert!(validated.contains("<span class=\"emphasis\">Unicode</span>"));
+        assert!(validated.contains("မြန်မာစာ"));
+        let (saved, _) =
+            crate::epub::rich_text::validate_document(&validated).expect("draft can be saved");
+        assert_eq!(saved, validated);
+        let (prefix, remaining) = continuation_parts(&original, proposal)
+            .expect("completed retry preserves translated sections");
+        assert!(remaining.trim().is_empty());
+        assert_eq!(
+            validate_proposal(prefix.as_bytes()).expect("retry validation"),
+            validated.trim_end()
+        );
+        for unsafe_markup in [
+            "<div onclick=\"evil()\"><p>Text</p></div>",
+            "<p><div>Nested block</div></p>",
+            "<span><div>Nested block</div></span>",
+            "<b><p>Nested block</p></b>",
+            "<b onclick=\"evil()\">Text</b>",
+            "<sup><p>Nested block</p></sup>",
+            "<sub><div>Nested block</div></sub>",
+            "<sup onclick=\"evil()\">1</sup>",
+            "<section onclick=\"evil()\"><p>Text</p></section>",
+            "<p><section><p>Nested block</p></section></p>",
+            "<div><script>evil()</script></div>",
+        ] {
+            assert!(
+                validate_proposal(unsafe_markup.as_bytes()).is_err(),
+                "{unsafe_markup}"
+            );
+        }
     }
 
     #[test]
@@ -1156,6 +1321,20 @@ mod tests {
         assert_eq!(prefix, "<h1>ခေါင်းစဉ်</h1>\n<p class=\"a\">တစ်</p>");
         assert_eq!(remaining, "<p>Two</p>");
         check_skeleton(original, &format!("{prefix}<p>နှစ်</p>")).expect("combined");
+    }
+
+    #[test]
+    fn epub_namespace_attributes_survive_fragment_comparison_and_retry() {
+        let original = "<p epub:type=\"footnote\">Note <a epub:type=\"backlink\" xlink:href=\"chapter.xhtml#ref\">↩</a></p><p>Next</p>";
+        let translated = "<p epub:type=\"footnote\">မှတ်ချက် <a epub:type=\"backlink\" xlink:href=\"chapter.xhtml#ref\">↩</a></p><p>နောက်တစ်ခု</p>";
+
+        check_skeleton(original, translated).expect("same EPUB markup");
+        let (prefix, remaining) = continuation_parts(original, "").expect("fresh retry input");
+        assert!(prefix.is_empty());
+        assert_eq!(remaining, original);
+        let (prefix, remaining) = continuation_parts(original, translated).expect("completed");
+        assert_eq!(prefix, translated);
+        assert!(remaining.is_empty());
     }
 
     #[test]
@@ -1264,6 +1443,122 @@ mod tests {
             validate_proposal(&big).expect_err("oversized").code,
             "proposal_too_large"
         );
+    }
+
+    #[cfg(windows)]
+    mod windows_runner_tests {
+        use super::*;
+
+        fn powershell() -> PathBuf {
+            PathBuf::from(std::env::var_os("SystemRoot").expect("Windows SystemRoot"))
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        }
+
+        fn args(script: &str) -> Vec<String> {
+            [
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script,
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect()
+        }
+
+        #[test]
+        fn unlimited_runs_can_finish_and_still_honor_cancel() {
+            let dir = tempfile::tempdir().expect("work dir");
+            let result = execute_streaming(
+                &powershell(),
+                &args("Start-Sleep -Milliseconds 300; [Console]::Out.WriteLine('done')"),
+                dir.path(),
+                &AtomicBool::new(false),
+                Duration::ZERO,
+                |_| {},
+            )
+            .expect("no automatic timeout");
+            assert!(result.status.success());
+            assert!(String::from_utf8_lossy(&result.stdout).contains("done"));
+            let cancel = AtomicBool::new(false);
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    std::thread::sleep(Duration::from_millis(200));
+                    cancel.store(true, Ordering::SeqCst);
+                });
+                let error = execute_streaming(
+                    &powershell(),
+                    &args("Start-Sleep -Seconds 2"),
+                    dir.path(),
+                    &cancel,
+                    Duration::ZERO,
+                    |_| {},
+                )
+                .expect_err("unlimited mode can still be cancelled");
+                assert_eq!(error.code, "translation_cancelled");
+            });
+        }
+
+        #[test]
+        fn timeout_still_stops_an_unresponsive_windows_tool() {
+            let dir = tempfile::tempdir().expect("work dir");
+            let started = Instant::now();
+            let error = execute_streaming(
+                &powershell(),
+                &args("Start-Sleep -Seconds 60"),
+                dir.path(),
+                &AtomicBool::new(false),
+                Duration::from_millis(300),
+                |_| {},
+            )
+            .expect_err("deadline stops the tool");
+            assert_eq!(error.code, "translation_timeout");
+            assert!(started.elapsed() < Duration::from_secs(15));
+        }
+
+        #[test]
+        fn cancel_stops_the_windows_tool_and_its_worker_process() {
+            let dir = tempfile::tempdir().expect("work dir");
+            let cancel = AtomicBool::new(false);
+            let mut output = Vec::new();
+            let script = "$worker = Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList '-NoProfile','-NonInteractive','-Command','Start-Sleep -Seconds 60' -PassThru -WindowStyle Hidden; [Console]::Out.WriteLine($worker.Id); [Console]::Out.Flush(); Start-Sleep -Seconds 60";
+            let error = execute_streaming(
+                &powershell(),
+                &args(script),
+                dir.path(),
+                &cancel,
+                Duration::from_secs(20),
+                |chunk| {
+                    output.extend_from_slice(chunk);
+                    if String::from_utf8_lossy(&output)
+                        .trim()
+                        .parse::<u32>()
+                        .is_ok()
+                    {
+                        cancel.store(true, Ordering::SeqCst);
+                    }
+                },
+            )
+            .expect_err("cancel stops the tool");
+            assert_eq!(error.code, "translation_cancelled");
+            let worker_id = String::from_utf8(output)
+                .expect("PID text")
+                .trim()
+                .parse::<u32>()
+                .expect("worker PID");
+            let probe = format!(
+                "if (Get-Process -Id {worker_id} -ErrorAction SilentlyContinue) {{ exit 1 }} else {{ exit 0 }}"
+            );
+            let status = std::process::Command::new(powershell())
+                .args(args(&probe))
+                .status()
+                .expect("probe worker process");
+            assert!(status.success(), "worker must not survive cancellation");
+        }
     }
 
     #[cfg(unix)]

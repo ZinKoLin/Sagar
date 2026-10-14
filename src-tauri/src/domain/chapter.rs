@@ -93,6 +93,7 @@ pub struct ExportOutcome {
 #[serde(rename_all = "camelCase")]
 pub struct ChapterImage {
     pub src: String,
+    pub source: String,
     pub alt: String,
 }
 

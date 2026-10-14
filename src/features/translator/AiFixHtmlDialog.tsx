@@ -323,7 +323,7 @@ export function AiFixHtmlDialog({
             ) : null}
             {running ? (
               <StatusNotice kind="loading">
-                Repairing… ({elapsed}s elapsed — this can take several minutes)
+                Repairing… ({elapsed}s elapsed — large drafts can take up to 60 minutes)
               </StatusNotice>
             ) : null}
             {running || streamed !== "" ? (

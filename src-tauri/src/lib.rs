@@ -32,14 +32,9 @@ fn serve_epub_resource(
             })
     };
 
-    let path = epub::percent_decode_path(request.uri().path().trim_start_matches('/'));
-    let mut segments = path.splitn(2, '/');
-    let (Some(project_id), Some(resource)) = (segments.next(), segments.next()) else {
+    let Some((project_id, resource)) = epub_resource_location(request.uri()) else {
         return respond(404, "text/plain", b"Not found".to_vec());
     };
-    if resource.is_empty() || crate::security::is_safe_entry_name(resource).is_err() {
-        return respond(404, "text/plain", b"Not found".to_vec());
-    }
 
     let data_dir = match app.path().app_data_dir() {
         Ok(dir) => dir,
@@ -59,8 +54,8 @@ fn serve_epub_resource(
         }
         let mut archive =
             epub::archive::SafeArchive::open(&snapshot_abs, &security::ArchiveLimits::default())?;
-        let bytes = archive.read_entry(resource)?;
-        Ok((media_type_for(resource), bytes))
+        let bytes = archive.read_entry(&resource)?;
+        Ok((media_type_for(&resource), bytes))
     })();
 
     match result {
@@ -73,6 +68,24 @@ fn serve_epub_resource(
         }
         Err(_) => respond(404, "text/plain", b"Not found".to_vec()),
     }
+}
+
+fn epub_resource_location(uri: &tauri::http::Uri) -> Option<(String, String)> {
+    let host = uri.host()?;
+    // WebView2 rewrites custom schemes to http://<scheme>.localhost. In that
+    // case convertFileSrc puts the original custom host in the first path
+    // segment. Other platforms keep it in the URI host.
+    let path = uri.path().trim_start_matches('/');
+    let (project_id, resource_path) = if host.eq_ignore_ascii_case("epubres.localhost") {
+        path.split_once('/')?
+    } else {
+        (host, path)
+    };
+    let resource = epub::percent_decode_path(resource_path);
+    if resource.is_empty() || crate::security::is_safe_entry_name(&resource).is_err() {
+        return None;
+    }
+    Some((project_id.to_string(), resource))
 }
 
 fn sanitize_svg(bytes: &[u8]) -> Vec<u8> {
@@ -162,4 +175,42 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+#[cfg(test)]
+mod resource_uri_tests {
+    use super::epub_resource_location;
+
+    #[test]
+    fn epub_resource_uri_uses_the_host_for_project_and_path_for_asset() {
+        let uri: tauri::http::Uri =
+            "epubres://project-id/OPS/image_fi/chapter/figure.png".parse().unwrap();
+        assert_eq!(
+            epub_resource_location(&uri),
+            Some((
+                "project-id".to_string(),
+                "OPS/image_fi/chapter/figure.png".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn epub_resource_uri_rejects_missing_asset_path() {
+        let uri: tauri::http::Uri = "epubres://project-id/".parse().unwrap();
+        assert_eq!(epub_resource_location(&uri), None);
+    }
+
+    #[test]
+    fn windows_converted_resource_uri_extracts_project_from_path() {
+        let uri: tauri::http::Uri =
+            "http://epubres.localhost/project-id/OPS/image_fi/chapter/figure.png"
+                .parse()
+                .unwrap();
+        assert_eq!(
+            epub_resource_location(&uri),
+            Some((
+                "project-id".to_string(),
+                "OPS/image_fi/chapter/figure.png".to_string()
+            ))
+        );
+    }
 }

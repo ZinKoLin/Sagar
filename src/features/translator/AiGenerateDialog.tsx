@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "../../components/Icon";
 import { StatusNotice } from "../../components/StatusNotice";
 import { formatDirection } from "../../lib/languages";
+import { loadTranslationTimeout, saveTranslationTimeout } from "../../lib/prefs";
 import {
   cancelAiTranslation,
   getTranslationSelection,
@@ -60,6 +61,7 @@ export function AiGenerateDialog({
   const [confirmInsert, setConfirmInsert] = useState(false);
   const [copied, setCopied] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [timeoutMinutes, setTimeoutMinutes] = useState(loadTranslationTimeout);
   const [eventsDead, setEventsDead] = useState(false);
   const jobId = useRef<string | null>(null);
   const starting = useRef(false);
@@ -103,7 +105,7 @@ export function AiGenerateDialog({
       if (event.key === "Tab") {
         const controls = Array.from(
           dialogRef.current?.querySelectorAll<HTMLElement>(
-            'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+            'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex="0"]',
           ) ?? [],
         );
         const first = controls[0];
@@ -266,6 +268,7 @@ export function AiGenerateDialog({
         previousOutput,
         currentInstructions,
         reasoningEffort: selection.reasoningEffort,
+        timeoutMinutes,
       });
       starting.current = false;
       if (closed.current) {
@@ -284,7 +287,7 @@ export function AiGenerateDialog({
         error instanceof CommandError ? error.message : "The proposal could not start.",
       );
     }
-  }, [chapterId, consent, selection, streamed, currentInstructions]);
+  }, [chapterId, consent, selection, streamed, currentInstructions, timeoutMinutes]);
 
   const handleCancel = useCallback(() => {
     if (!jobId.current) {
@@ -404,6 +407,27 @@ export function AiGenerateDialog({
                   Book instructions and this run's instructions are sent together.
                   Changing these instructions restarts translation on Retry.
                 </p>
+                <label className="form-field">
+                  <span>Time limit</span>
+                  <select
+                    value={timeoutMinutes}
+                    onChange={(event) => {
+                      const minutes = Number(event.target.value);
+                      setTimeoutMinutes(minutes);
+                      saveTranslationTimeout(minutes);
+                    }}
+                  >
+                    <option value={60}>1 hour</option>
+                    <option value={120}>2 hours</option>
+                    <option value={240}>4 hours</option>
+                    <option value={0}>No time limit</option>
+                  </select>
+                </label>
+                {timeoutMinutes === 0 ? (
+                  <p className="dialog__muted">
+                    The run can keep using your allowance until it finishes or you cancel.
+                  </p>
+                ) : null}
                 <label className="export-ack">
                   <input
                     type="checkbox"
@@ -453,7 +477,11 @@ export function AiGenerateDialog({
             ) : null}
             {running ? (
               <StatusNotice kind="loading">
-                Translating… ({elapsed}s elapsed — this can take several minutes)
+                Translating… ({elapsed}s elapsed —{" "}
+                {timeoutMinutes === 0
+                  ? "no time limit; cancel anytime"
+                  : `time limit: ${timeoutMinutes} minutes`}
+                )
               </StatusNotice>
             ) : null}
             {running || streamed !== "" ? (

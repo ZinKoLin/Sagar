@@ -107,6 +107,7 @@ export async function startAiTranslation(input: {
   previousOutput?: string;
   currentInstructions?: string;
   reasoningEffort?: string | null;
+  timeoutMinutes?: number;
 }): Promise<AiTranslationStart> {
   try {
     return await invoke<AiTranslationStart>("start_ai_translation", {
@@ -117,6 +118,7 @@ export async function startAiTranslation(input: {
       previousOutput: input.previousOutput ?? null,
       currentInstructions: input.currentInstructions ?? null,
       reasoningEffort: input.reasoningEffort ?? null,
+      timeoutMinutes: input.timeoutMinutes ?? null,
     });
   } catch (error) {
     throw toCommandError(error);

@@ -31,6 +31,31 @@ pub fn image_bytes(src: &str) -> Result<(&'static str, Vec<u8>), AppError> {
     Ok((mime, bytes))
 }
 
+fn validate_image_source(src: &str) -> Result<(), AppError> {
+    let invalid = || {
+        AppError::new(
+            "invalid_image",
+            "Choose a PNG, JPEG or GIF image under 8 MB, or keep a relative image from the book.",
+        )
+    };
+    if src.starts_with("data:") {
+        image_bytes(src)?;
+        return Ok(());
+    }
+    // Relative EPUB resource references are preserved as-is for export. Reject
+    // absolute paths, URL schemes, protocol-relative URLs and Windows paths.
+    if src.trim().is_empty()
+        || src.starts_with('/')
+        || src.starts_with('\\')
+        || src.contains(':')
+        || src.contains('\\')
+        || src.chars().any(char::is_control)
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 /// Validates and canonicalizes inline XHTML, deriving authoritative plain text.
 pub fn validate(fragment: &str) -> Result<(String, String), AppError> {
     validate_schema(fragment, false)
@@ -50,7 +75,11 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
     if fragment.len() > MAX_FRAGMENT {
         return Err(invalid());
     }
-    let wrapped = format!("<w xmlns=\"http://www.w3.org/1999/xhtml\">{fragment}</w>");
+    // EPUB fragments inherit these prefixes from their outer <html> element.
+    // Restore them on the synthetic wrapper after extracting a chapter body.
+    let wrapped = format!(
+        "<w xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">{fragment}</w>"
+    );
     let full = if document {
         roxmltree::Document::parse(fragment).ok().filter(|doc| {
             matches!(doc.root_element().tag_name().name(), "html" | "body")
@@ -123,6 +152,25 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 || document
                     && matches!(
                         tag,
+                        "span"
+                            | "div"
+                            | "b"
+                            | "i"
+                            | "sup"
+                            | "sub"
+                            | "section"
+                            | "article"
+                            | "aside"
+                            | "header"
+                            | "footer"
+                            | "nav"
+                            | "main"
+                            | "figure"
+                            | "figcaption"
+                    )
+                || document
+                    && matches!(
+                        tag,
                         "p" | "h1"
                             | "h2"
                             | "h3"
@@ -143,7 +191,10 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                             | "th"
                     ))
         {
-            return Err(invalid());
+            return Err(AppError::new(
+                "invalid_translation",
+                format!("The translation contains unsupported element <{tag}>."),
+            ));
         }
         if document {
             let parent = node
@@ -152,7 +203,18 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 .unwrap_or("w");
             let is_block = matches!(
                 tag,
-                "p" | "h1"
+                "div"
+                    | "section"
+                    | "article"
+                    | "aside"
+                    | "header"
+                    | "footer"
+                    | "nav"
+                    | "main"
+                    | "figure"
+                    | "figcaption"
+                    | "p"
+                    | "h1"
                     | "h2"
                     | "h3"
                     | "h4"
@@ -173,7 +235,22 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
             );
             if matches!(
                 parent,
-                "p" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "strong" | "em" | "u" | "s" | "a"
+                "p" | "h1"
+                    | "h2"
+                    | "h3"
+                    | "h4"
+                    | "h5"
+                    | "h6"
+                    | "strong"
+                    | "em"
+                    | "b"
+                    | "i"
+                    | "sup"
+                    | "sub"
+                    | "u"
+                    | "s"
+                    | "a"
+                    | "span"
             ) && is_block
             {
                 return Err(AppError::new(
@@ -227,25 +304,48 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
             }
         }
         for attr in node.attributes() {
-            if attr.namespace().is_some()
-                || !(matches!(
+            let is_epub_type = document
+                && attr.namespace() == Some("http://www.idpf.org/2007/ops")
+                && attr.name() == "type";
+            let is_standard_attribute = attr.namespace().is_none()
+                && (matches!(
                     (tag, attr.name()),
                     ("img", "src" | "alt")
                         | ("a", "href")
+                        | ("table", "border")
                         | ("ol", "start")
                         | ("td" | "th", "colspan" | "rowspan")
                 ) || document
                     && matches!(
                         attr.name(),
-                        "class" | "id" | "style" | "title" | "lang" | "dir"
-                    ))
-            {
-                return Err(invalid());
+                        "class" | "id" | "style" | "title" | "lang" | "dir" | "role"
+                    ));
+            if !(is_epub_type || is_standard_attribute) {
+                return Err(AppError::new(
+                    "invalid_translation",
+                    format!(
+                        "The translation contains unsupported attribute '{}' on <{tag}>.",
+                        attr.name()
+                    ),
+                ));
             }
         }
         html.push('<');
         html.push_str(tag);
         for attr in node.attributes() {
+            if tag == "table"
+                && attr.name() == "border"
+                && attr
+                    .value()
+                    .parse::<u16>()
+                    .ok()
+                    .is_none_or(|border| border > 100)
+            {
+                return Err(AppError::new(
+                    "invalid_translation",
+                    "Table border must be an integer from 0 to 100.",
+                ));
+            }
             if matches!(attr.name(), "colspan" | "rowspan")
                 && attr
                     .value()
@@ -262,7 +362,7 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 validate_style(attr.value())?;
             }
             if tag == "img" && attr.name() == "src" {
-                image_bytes(attr.value())?;
+                validate_image_source(attr.value())?;
             }
             if tag == "a" && attr.name() == "href" {
                 let value = attr.value();
@@ -270,9 +370,15 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                     return Err(invalid());
                 }
             }
+            let qualified_name = if attr.namespace() == Some("http://www.idpf.org/2007/ops")
+                && attr.name() == "type"
+            {
+                "epub:type"
+            } else {
+                attr.name()
+            };
             html.push_str(&format!(
-                " {}=\"{}\"",
-                attr.name(),
+                " {qualified_name}=\"{}\"",
                 escape_html_text(attr.value())
             ));
         }
@@ -360,6 +466,23 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
             ));
         };
         let property_name = property.trim().to_ascii_lowercase();
+        let ligature_value = property_name == "font-variant-ligatures"
+            && !value.trim().is_empty()
+            && value.trim().split_ascii_whitespace().all(|token| {
+                matches!(
+                    token.to_ascii_lowercase().as_str(),
+                    "normal"
+                        | "none"
+                        | "common-ligatures"
+                        | "no-common-ligatures"
+                        | "discretionary-ligatures"
+                        | "no-discretionary-ligatures"
+                        | "historical-ligatures"
+                        | "no-historical-ligatures"
+                        | "contextual"
+                        | "no-contextual"
+                )
+            });
         let color_function = matches!(property_name.as_str(), "color" | "background-color")
             && ["rgb(", "rgba(", "hsl(", "hsla("].iter().any(|prefix| {
                 value
@@ -380,6 +503,7 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
                 | "background-color"
                 | "font-weight"
                 | "font-style"
+                | "font-variant-ligatures"
                 | "font-size"
                 | "font-family"
                 | "line-height"
@@ -388,7 +512,8 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
                 | "text-indent"
                 | "letter-spacing"
                 | "word-spacing"
-        ) || value.contains(['@', '\\', '<', '>'])
+        ) || property_name == "font-variant-ligatures" && !ligature_value
+            || value.contains(['@', '\\', '<', '>'])
             || value.contains(['(', ')']) && !color_function
         {
             return Err(AppError::new(

@@ -1,17 +1,8 @@
-import Image from "@tiptap/extension-image";
-import { Table, TableCell, TableHeader, TableRow } from "@tiptap/extension-table";
 import { type Editor, EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
 import { useEffect, useRef } from "react";
-import { BookAttributes } from "./bookAttributes";
+import { chapterExtensions } from "./chapterSchema";
 import { documentFragment } from "./richText";
 import { useSlashMenu } from "./useSlashMenu";
-
-const ChapterTable = Table.extend({
-  renderHTML({ HTMLAttributes }) {
-    return ["table", HTMLAttributes, ["tbody", 0]];
-  },
-});
 
 export function ChapterEditor({
   html,
@@ -30,20 +21,9 @@ export function ChapterEditor({
 }) {
   const keyHandler = useRef<(event: KeyboardEvent) => boolean>(() => false);
   const editor = useEditor({
-    extensions: [
-      BookAttributes,
-      ChapterTable.configure({ resizable: false }),
-      TableRow,
-      TableCell,
-      TableHeader,
-      StarterKit.configure({
-        code: false,
-        codeBlock: false,
-        link: { openOnClick: false, autolink: false },
-      }),
-      Image.configure({ allowBase64: true }),
-    ],
+    extensions: chapterExtensions(),
     content: html || "<p></p>",
+    parseOptions: { preserveWhitespace: true },
     editable: !disabled,
     editorProps: {
       handleKeyDown: (_view, event) => keyHandler.current(event),

@@ -674,7 +674,9 @@ fn package_images(
     snapshot: &SafeArchive,
     images: &mut HashMap<String, (String, Vec<u8>)>,
 ) -> Result<String, AppError> {
-    let wrapped = format!("<w>{fragment}</w>");
+    let wrapped = format!(
+        "<w xmlns:epub=\"http://www.idpf.org/2007/ops\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">{fragment}</w>"
+    );
     let doc = roxmltree::Document::parse(&wrapped)
         .map_err(|_| AppError::new("invalid_translation", "Invalid saved XHTML."))?;
     let mut result = fragment.to_string();
@@ -787,7 +789,9 @@ fn replace_chapter_body(original: &[u8], html: &str) -> Result<Vec<u8>, AppError
         _ => return Err(invalid()),
     };
     let end = range.start + source[range.clone()].rfind('<').ok_or_else(invalid)?;
-    let wrapped = format!("<w>{html}</w>");
+    let wrapped = format!(
+        "<w xmlns:epub=\"http://www.idpf.org/2007/ops\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">{html}</w>"
+    );
     let target = roxmltree::Document::parse(&wrapped).map_err(|_| invalid())?;
     let mut anchors = String::new();
     for node in body.descendants().skip(1).filter(|n| n.is_element()) {
