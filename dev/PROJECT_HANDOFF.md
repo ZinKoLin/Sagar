@@ -1,7 +1,7 @@
 # Sagar project handoff
 
-**Reviewed:** 2026-11-13  
-**Purpose:** A compact, current project record for a developer or AI continuing work in this repository.  
+**Reviewed:** 2026-11-13
+**Purpose:** A compact, current project record for a developer or AI continuing work in this repository.
 **Source of truth:** Current code and migrations first; then this handoff; then the dated history in [`plan.md`](plan.md) and the milestone documents. Where an older milestone document conflicts with later implemented behavior, use the dated follow-up in `plan.md` and verify the code.
 
 ## Product and workflow
@@ -91,7 +91,7 @@ Bilingual export is an optional separate EPUB output. It pairs matching source/t
 ## Current working-tree caution (2026-11-13)
 
 Publication follow-up: the user requested uploading the current project. The
-existing feature edits described below are being committed together with the
+existing feature edits described below are committed together with the
 provider fixes and documentation to the user's existing GitHub fork,
 https://github.com/ZinKoLin/Sagar, branch codex/sagar-translation-updates.
 Upstream saturngod/Sagar is read-only for this account. This snapshot preserves

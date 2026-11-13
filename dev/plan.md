@@ -15,6 +15,8 @@ tests and documentation found no common API-token/private-key patterns. Generate
 builds, local translation databases and credential files are not staged. Current
 builds and focused feature test results are recorded above; this publication
 does not claim the full suite, EPUBCheck or cross-platform checks passed.
+Staging the new handoff then exposed two Markdown trailing-space line breaks;
+these were removed and the final staged whitespace check was rerun.
 Next: verify the pushed commit matches the local snapshot, then continue the
 remaining native chapter-translation and release verification tasks.
 
