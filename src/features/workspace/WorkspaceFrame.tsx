@@ -21,6 +21,7 @@ import { ChapterPicker } from "../chapters/ChapterPicker";
 import { ChapterSidebar } from "../chapters/ChapterSidebar";
 import { ExportDialog } from "../export/ExportDialog";
 import { SourcePane } from "../reader/SourcePane";
+import { AiGenerateDialog, type TranslationPhase } from "../translator/AiGenerateDialog";
 import { TargetPane } from "../translator/TargetPane";
 import { useChapterEditor } from "../translator/useChapterEditor";
 import { BookSettingsDialog } from "./BookSettingsDialog";
@@ -70,6 +71,9 @@ export function WorkspaceFrame({
   const [exportOutcome, setExportOutcome] = useState<ExportOutcome | null>(null);
   const [langOpen, setLangOpen] = useState(false);
   const [bookSettingsOpen, setBookSettingsOpen] = useState(false);
+  const [translationChapterId, setTranslationChapterId] = useState<string | null>(null);
+  const [translationHidden, setTranslationHidden] = useState(false);
+  const [translationPhase, setTranslationPhase] = useState<TranslationPhase>("idle");
   const readingRef = useRef<HTMLDivElement>(null);
   const loadSequence = useRef(0);
   const contentRef = useRef<ChapterContent | null>(null);
@@ -139,6 +143,27 @@ export function WorkspaceFrame({
     contentState.status === "ready" ? contentState.content : null,
   );
 
+  const continueTranslation = useCallback(
+    async (currentChapterId: string): Promise<string | null | "save-failed"> => {
+      if (projectState.status !== "ready") return null;
+      const ordered = [...projectState.chapters].sort(
+        (a, b) => a.spineIndex - b.spineIndex,
+      );
+      const currentIndex = ordered.findIndex(
+        (chapter) => chapter.id === currentChapterId,
+      );
+      const next = ordered[currentIndex + 1];
+      if (!next) return null;
+      if (!(await editor.flushAll())) return "save-failed";
+      setActiveChapterId(next.id);
+      loadChapter(next.id);
+      setTranslationChapterId(next.id);
+      setTranslationHidden(false);
+      return next.id;
+    },
+    [editor, loadChapter, projectState],
+  );
+
   const selectChapter = useCallback(
     (chapterId: string) => {
       if (chapterId === activeChapterId) {
@@ -189,6 +214,9 @@ export function WorkspaceFrame({
   const content = contentState.status === "ready" ? contentState.content : null;
   const activeChapter =
     chapters.find((chapter) => chapter.id === activeChapterId) ?? null;
+  const translatingChapter = chapters.find(
+    (chapter) => chapter.id === translationChapterId,
+  );
 
   return (
     <div className="workspace">
@@ -197,7 +225,11 @@ export function WorkspaceFrame({
           type="button"
           className="icon-button"
           aria-label="Back to library"
-          title="Back to library"
+          title={
+            translationPhase === "running" && translationChapterId
+              ? "Back to library (cancels translation)"
+              : "Back to library"
+          }
           onClick={() => {
             void editor.flushAll().then((ok) => {
               if (ok) onBackToLibrary();
@@ -267,6 +299,25 @@ export function WorkspaceFrame({
             </button>
           </div>
         </div>
+        <button
+          type="button"
+          className="btn workspace__save-action"
+          aria-label="Save chapter"
+          title="Save chapter (Ctrl+S)"
+          disabled={
+            !editor.draft ||
+            editor.draft.conflict ||
+            editor.indicator === "saving" ||
+            (!editor.draft.dirty && !editor.draft.error)
+          }
+          onClick={() => {
+            if (editor.draft?.error) void editor.retry();
+            else void editor.flushAll();
+          }}
+        >
+          <Icon name={editor.indicator === "saving" ? "refresh" : "save"} spin={editor.indicator === "saving"} />
+          {editor.indicator === "saving" ? "Saving…" : "Save"}
+        </button>
         <span
           className={`workspace__save workspace__save--${editor.indicator}`}
           role="status"
@@ -274,6 +325,33 @@ export function WorkspaceFrame({
         >
           {SAVE_LABEL[editor.indicator]}
         </span>
+        {translationChapterId ? (
+          <button
+            type="button"
+            className="btn workspace__translation"
+            onClick={() => setTranslationHidden(false)}
+            title={`Open translation progress: ${translatingChapter?.title ?? "chapter"}`}
+            aria-label="Open translation progress"
+          >
+            <Icon
+              name={translationPhase === "running" ? "refresh" : "sparkles"}
+              spin={translationPhase === "running"}
+            />
+            <span role="status">
+              {translationPhase === "running"
+                ? "Translating"
+                : translationPhase === "proposal"
+                  ? "Translation ready"
+                  : translationPhase === "failed"
+                    ? "Translation failed"
+                    : translationPhase === "repair"
+                      ? "HTML needs repair"
+                      : "Translation"}
+              {" · "}
+              {translatingChapter ? `Ch. ${translatingChapter.spineIndex + 1}` : ""}
+            </span>
+          </button>
+        ) : null}
         <button
           type="button"
           className="icon-button"
@@ -372,6 +450,7 @@ export function WorkspaceFrame({
               loading={contentState.status === "loading"}
               error={contentState.status === "error" ? contentState.message : null}
               onRetry={reloadAfterConflict}
+              targetHtml={editor.draft?.html ?? content?.document.html ?? ""}
             />
           </div>
           <Splitter
@@ -394,6 +473,13 @@ export function WorkspaceFrame({
             onRetry={reloadAfterConflict}
             onReloadAfterConflict={reloadAfterConflict}
             editor={editor}
+            onOpenTranslation={() => {
+              if (!translationChapterId && content) {
+                setTranslationChapterId(content.chapterId);
+                setTranslationPhase("idle");
+              }
+              setTranslationHidden(false);
+            }}
           />
         </div>
       </div>
@@ -439,6 +525,23 @@ export function WorkspaceFrame({
               current.status === "ready" ? { ...current, project: updated } : current,
             )
           }
+        />
+      ) : null}
+      {translationChapterId ? (
+        <AiGenerateDialog
+          projectId={projectId}
+          chapterId={translationChapterId}
+          chapterTitle={translatingChapter?.title}
+          editor={editor}
+          hidden={translationHidden}
+          onBackground={() => setTranslationHidden(true)}
+          onPhaseChange={setTranslationPhase}
+          onOpenChapter={() => selectChapter(translationChapterId)}
+          onNextChapter={continueTranslation}
+          onClose={() => {
+            setTranslationChapterId(null);
+            setTranslationHidden(false);
+          }}
         />
       ) : null}
 

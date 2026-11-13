@@ -147,11 +147,11 @@ export function useChapterEditor(content: ChapterContent | null) {
     },
     [publish, save],
   );
-  const retry = useCallback(() => {
+  const retry = useCallback((): Promise<boolean> => {
     const current = latest.current;
-    if (!current || current.conflict) return;
+    if (!current || current.conflict) return Promise.resolve(false);
     publish({ ...current, error: null });
-    void save();
+    return save();
   }, [publish, save]);
   const indicator: SaveIndicator = draft?.error
     ? "error"

@@ -17,6 +17,7 @@ import type {
 type TranslationModelSectionProps = {
   cli: CliProviderStatus[];
   custom: CustomProviderSummary[];
+  onConfigureGrok?: () => void;
 };
 
 export function agentLabel(
@@ -38,12 +39,16 @@ export function agentLabel(
 }
 
 /**
- * Translation Model picker: choose the agent (Codex / OpenCode / Claude Code
+ * Translation Model picker: choose the agent (Codex / OpenCode / Claude Code / Antigravity
  * or a saved custom provider) and the model future translation will use.
  * Selecting only persists the choice; it never starts translation and never
  * sends book text anywhere.
  */
-export function TranslationModelSection({ cli, custom }: TranslationModelSectionProps) {
+export function TranslationModelSection({
+  cli,
+  custom,
+  onConfigureGrok,
+}: TranslationModelSectionProps) {
   const [agent, setAgent] = useState("codex");
   const [catalog, setCatalog] = useState<TranslationModelList | null>(null);
   const [loading, setLoading] = useState(false);
@@ -121,11 +126,14 @@ export function TranslationModelSection({ cli, custom }: TranslationModelSection
     catalog?.agent === agent
       ? catalog.models.find((model) => model.id === draft.trim())
       : undefined;
-  const effortOptions =
-    selectedModel?.reasoningEfforts ??
-    (agent === "codex"
-      ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
-      : []);
+  const effortOptions = agent.startsWith("custom:")
+    ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+    : (selectedModel?.reasoningEfforts ??
+      (agent === "codex"
+        ? ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+        : agent === "agy"
+          ? ["low", "medium", "high"]
+          : []));
   const effortOrder = [
     "none",
     "minimal",
@@ -202,6 +210,10 @@ export function TranslationModelSection({ cli, custom }: TranslationModelSection
           <select
             value={agent}
             onChange={(event) => {
+              if (event.target.value === "setup:xai") {
+                onConfigureGrok?.();
+                return;
+              }
               setAgent(event.target.value);
               setDraft("");
               setEffort("");
@@ -218,9 +230,14 @@ export function TranslationModelSection({ cli, custom }: TranslationModelSection
             ))}
             {custom.map((provider) => (
               <option key={provider.id} value={`custom:${provider.id}`}>
-                {provider.name} (custom)
+                {provider.name}
+                {provider.baseUrl === "https://api.x.ai/v1" ? " · xAI API" : " (custom)"}
               </option>
             ))}
+            {onConfigureGrok &&
+            !custom.some((provider) => provider.baseUrl === "https://api.x.ai/v1") ? (
+              <option value="setup:xai">Grok (xAI) · API key ချိတ်ဆက်ရန်</option>
+            ) : null}
           </select>
         </label>
         <label className="form-field">
@@ -234,6 +251,21 @@ export function TranslationModelSection({ cli, custom }: TranslationModelSection
           />
         </label>
       </div>
+
+      {agent === "agy" ? (
+        <p className="dialog__muted" role="status">
+          {cli.some((provider) => provider.id === "agy" && provider.available)
+            ? "Antigravity CLI ကို တွေ့ရှိပါသည်။ အောက်မှ မော်ဒယ်ရွေးပြီး Save နှိပ်ပါ။ စာရင်းမပေါ်ပါက Refresh နှိပ်ပါ။"
+            : "Antigravity ဖြင့် ဘာသာပြန်ရန် agy CLI လိုအပ်ပါသည်။ Antigravity အက်ပ်နှင့်အတူ CLI ကိုလည်း ထည့်သွင်းပြီးနောက် Settings ကို ပြန်ဖွင့်ပါ။"}
+        </p>
+      ) : null}
+
+      {agent === "grok" ? (
+        <p className="dialog__muted" role="status">
+          Grok Build CLI တွင် grok login ဖြင့် အကောင့်ဝင်ထားရန် လိုပါသည်။ Sagar တွင် API key ဖြည့်ရန်
+          မလိုပါ။ သင့်အကောင့်၏ Grok Build အသုံးပြုခွင့်နှင့် ကန့်သတ်ချက်များအတိုင်း ဘာသာပြန်ပါမည်။
+        </p>
+      ) : null}
 
       <div className="model-refresh-row">
         <button
@@ -332,7 +364,7 @@ export function TranslationModelSection({ cli, custom }: TranslationModelSection
             setSaveError(null);
           }}
         >
-          <option value="">Default (CLI setting)</option>
+          <option value="">Default (provider setting)</option>
           {orderedEfforts.map((value) => (
             <option key={value} value={value}>
               {effortLabel(value)}
@@ -341,9 +373,11 @@ export function TranslationModelSection({ cli, custom }: TranslationModelSection
         </select>
       </label>
       <p className="dialog__muted" id="reasoning-effort-help">
-        {effortOptions.length === 0
-          ? "No adjustable effort levels are listed for this model. The CLI default will be used."
-          : "Higher effort can take longer and use more tokens. Available levels depend on the model and CLI version."}
+        {agent.startsWith("custom:")
+          ? "Send the selected reasoning effort to your API provider. Available choices are overrides, not detected model capabilities. If the provider rejects a value, choose another level or Default to use its own setting."
+          : effortOptions.length === 0
+            ? "No adjustable effort levels are listed for this model. The provider default will be used."
+            : "Higher effort can take longer and use more tokens. Available levels depend on the model and provider."}
       </p>
 
       {saveError ? <StatusNotice kind="error">{saveError}</StatusNotice> : null}

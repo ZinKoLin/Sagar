@@ -3,6 +3,12 @@
 > Instructions for coding agents and contributors. Apply these rules before modifying this repository.
 > If a task conflicts with this document, explain the conflict and prefer the smallest safe change.
 
+## User communication
+
+- Reply to this user in Burmese, including progress and final replies, unless another language is explicitly requested. Keep code identifiers and proper names intact.
+- Antigravity translation uses the standalone `agy` CLI. Detecting the Antigravity desktop app alone does not establish CLI availability; verify `agy --version` and `agy models` before reporting it ready.
+- Grok Build (`grok`) is a separate account-login CLI provider from the direct xAI API provider. Respect that distinction when the user asks to use their Grok account. Let the official CLI handle OAuth and credentials; never extract desktop/browser tokens. Keep translation tools disabled and retain the shared validation/recovery path.
+
 ## 1. Product mission
 
 Build an **offline-first desktop EPUB Translation Studio**. A user imports a DRM-free, reflowable EPUB, reads the original chapter on the left, manually translates it on the right, saves progress locally, and exports a **translated EPUB** that preserves the source book's structure and non-translated assets.
@@ -57,9 +63,10 @@ Use existing dependency versions and Tauri capabilities already present in the s
 - Keep a **private immutable copy** of the imported source EPUB, with references to its extracted resources, inside app-owned project storage.
 - Keep all editable translations separately from source files. Export does not overwrite the source file.
 
-**Future AI adapter (not implemented)**
-- Could consume source block IDs plus text/context, propose translations, and save through the **same translation service** after user review.
-- Must never bypass the editor's autosave/version rules or overwrite manually edited text without confirmation.
+**Explicitly authorized AI translation**
+- AI translation/provider functionality was added after the original manual-only MVP by explicit user request. The historical feature and verification record is in `dev/plan.md`; current details are in `dev/PROJECT_HANDOFF.md`.
+- Keep AI calls user initiated, disclose when book text is sent to an external provider, and retain proposals/recovery output separately until the user reviews or explicitly accepts them.
+- Route accepted proposals through the same validation, autosave/version and recovery rules as manual edits. Never overwrite a changed or reviewed draft implicitly.
 
 ## 5. Invariants — never break these
 
@@ -187,7 +194,7 @@ Run the relevant checks available in the repository; don't claim checks passed i
 
 ## 8. Definition of done for each feature
 
-- [ ] Meets the acceptance criteria in `Plan.md`; handles cancel, invalid input, and I/O errors.
+- [ ] Meets the acceptance criteria in `dev/plan.md` and the relevant milestone record; handles cancel, invalid input, and I/O errors.
 - [ ] User-visible state includes loading, success, errors, and save status where applicable.
 - [ ] Unit tests for parsing/logic and integration test or fixture for any EPUB read/write change.
 - [ ] No loss of source content; preserved links and assets remain usable.
@@ -195,24 +202,33 @@ Run the relevant checks available in the repository; don't claim checks passed i
 - [ ] UI follows the shared layout/control patterns above; labels, focus and disabled states remain readable and usable.
 - [ ] Rendered UI/interaction checks reported separately from lint/build; any native or cross-platform limitations are explicit.
 - [ ] TypeScript/Rust checks run and results reported, including limitations.
-- [ ] No AI/network functionality introduced in Phase 1.
+- [ ] No unrequested AI/network functionality; explicit user-authorized provider features must keep consent, privacy and recovery boundaries clear.
 
 ## 9. Agent execution protocol
 
 For each request:
 
-1. Read `AGENTS.md`, then `Plan.md` and the relevant implementation files.
+1. Read `AGENTS.md`, then `dev/plan.md`, `dev/PROJECT_HANDOFF.md` and the relevant implementation files.
 2. Pick the earliest unfinished milestone affected by the task.
 3. State a short implementation plan and any assumptions before large edits.
 4. Make the smallest end-to-end, testable slice (UI + service + persistence when necessary).
 5. Add tests for new EPUB structures and regression fixtures for any reported bug.
 6. Run available checks. Summarize changed files, test results, risks, and the **next unfinished task**.
-7. Update `Plan.md` checkboxes only when the functionality exists **and** acceptance criteria are met. Never mark future work completed speculatively.
+7. Update `dev/plan.md` milestone checkboxes only when the functionality exists **and** acceptance criteria are met. Never mark future work completed speculatively.
 
-## 10. Decision log
+## 10. Persistent project record and continuity
+
+- The current project roadmap and chronological implementation record is `dev/plan.md` (there is no root `Plan.md`). Read it together with `dev/PROJECT_HANDOFF.md` before starting work.
+- Treat `dev/PROJECT_HANDOFF.md` as the concise, current handoff for another contributor or AI: product state, architecture, current working-tree caveats, known risks and next work.
+- After **every task that changes code, configuration, tests, or project documentation**, add a dated entry to `dev/plan.md` describing what changed, why, files/areas affected, checks actually run and their results, remaining limitations, and the next unfinished task. Update `dev/PROJECT_HANDOFF.md` in the same task whenever the current status, architecture, risks, validation or next steps change.
+- Keep older entries as history. Correct them with a dated follow-up instead of silently rewriting what was previously reported. Never mark work verified unless the relevant check was actually run; distinguish automated checks from native UI, EPUB reader, accessibility, IME and cross-platform verification.
+- Before editing, inspect `git status` and existing diffs. Treat pre-existing uncommitted changes as the user's work: preserve them, do not reset/revert them, and avoid broad rewrites or formatting unrelated files. Record significant in-progress changes in the handoff so the next AI knows they may be unfinished.
+- If a task makes no project changes, do not add a changelog entry just to say so.
+
+## 11. Decision log
 
 - **ADR-001:** Tauri 2 + React/TypeScript + Bun is locked for desktop v1.
-- **ADR-002:** Manual translation first. AI is a post-MVP feature behind a future service interface.
+- **ADR-002:** Manual translation was the initial MVP. AI translation was added post-MVP only after explicit user authorization; keep its consent, recovery and draft-preservation boundaries documented.
 - **ADR-003:** Rust owns EPUB parsing, persistence boundaries and export; React owns rendering and editing UI.
 - **ADR-004:** Source EPUB is immutable; translation data is a separate recoverable local project.
 - **ADR-005:** First supported target is text-heavy, reflowable, DRM-free EPUB 3; unsupported features must be explicit.

@@ -45,26 +45,32 @@ fn open_settings_db(data_dir: &Path) -> Result<rusqlite::Connection, AppError> {
 // ------------------------------------------------------------ CLI lookup
 
 /// File names tried for one binary. Windows installers (including npm shims)
-/// use executable extensions; other systems use the bare name plus the
-/// platform executable suffix.
+/// use executable extensions. Never select npm's extensionless POSIX shim
+/// on Windows: it can exist beside the runnable `.cmd` launcher.
 fn candidate_file_names(binary: &str) -> Vec<OsString> {
-    if cfg!(windows) {
-        // npm installs an extensionless POSIX shell shim alongside Windows
-        // shims. Prefer files Windows can execute or invoke through PowerShell.
-        [".exe", ".cmd", ".bat", ".ps1"]
-            .into_iter()
-            .map(|extension| OsString::from(format!("{binary}{extension}")))
-            .chain(std::iter::once(OsString::from(binary)))
-            .collect()
+    candidate_file_names_for(binary, cfg!(windows))
+}
+
+fn candidate_file_names_for(binary: &str, windows: bool) -> Vec<OsString> {
+    let suffixes: &[&str] = if windows {
+        &[".exe", ".cmd", ".bat"]
     } else {
-        vec![OsString::from(binary)]
-    }
+        &[""]
+    };
+    suffixes
+        .iter()
+        .map(|suffix| OsString::from(format!("{binary}{suffix}")))
+        .collect()
 }
 
 fn find_on_path_in(directories: &[PathBuf], binary: &str) -> Option<PathBuf> {
     let candidates = candidate_file_names(binary);
+    find_candidate_in(directories, &candidates)
+}
+
+fn find_candidate_in(directories: &[PathBuf], candidates: &[OsString]) -> Option<PathBuf> {
     for directory in directories {
-        for candidate in &candidates {
+        for candidate in candidates {
             let path = directory.join(candidate);
             if path.is_file() {
                 return Some(path);
@@ -102,13 +108,29 @@ fn home_directory() -> Option<PathBuf> {
     }
 }
 
+/// Respect relocated Windows local app data, with the normal profile layout
+/// as a fallback when the desktop process does not inherit LOCALAPPDATA.
+#[cfg(any(windows, test))]
+fn windows_agy_directories(home: &Path, local_appdata: Option<&Path>) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(local) = local_appdata.filter(|path| path.is_absolute()) {
+        directories.push(local.join("agy").join("bin"));
+    }
+    let default = home.join("AppData").join("Local").join("agy").join("bin");
+    if !directories.contains(&default) {
+        directories.push(default);
+    }
+    directories
+}
+
 /// Well-known per-user install locations for `home`, without touching the
-/// filesystem beyond a best-effort `nvm` directory listing. Callers filter by
+/// filesystem beyond best-effort directory listings. Callers filter by
 /// file existence at lookup time, so missing directories are harmless.
 fn fallback_directories_for(home: &Path) -> Vec<PathBuf> {
     let mut directories = Vec::new();
     for relative in [
         ".opencode/bin",
+        ".grok/bin",
         ".local/bin",
         "bin",
         ".cargo/bin",
@@ -116,12 +138,18 @@ fn fallback_directories_for(home: &Path) -> Vec<PathBuf> {
         ".deno/bin",
         ".volta/bin",
         ".asdf/shims",
+        ".local/share/mise/shims",
+        ".config/herd-lite/bin",
         "Library/pnpm/bin",
+        // Laravel Herd ships its own PHP/Node on macOS; harmless when absent.
+        "Library/Application Support/Herd/bin",
     ] {
         directories.push(home.join(relative));
     }
     #[cfg(windows)]
     {
+        let local_appdata = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+        directories.extend(windows_agy_directories(home, local_appdata.as_deref()));
         if let Some(appdata) = std::env::var_os("APPDATA").map(PathBuf::from) {
             if appdata.is_absolute() {
                 directories.push(appdata.join("npm"));
@@ -140,7 +168,79 @@ fn fallback_directories_for(home: &Path) -> Vec<PathBuf> {
         versions.sort();
         directories.extend(versions);
     }
+    // Other version managers keep one `bin` per Node release outside the
+    // login-shell PATH that GUI launches see. Expand them the same way so a
+    // `#!/usr/bin/env node` shim (for example a bun/npm-installed `claude`)
+    // resolves its runtime even when the shell probe misses it.
+    directories.extend(node_version_bins(home));
     directories
+}
+
+/// Versioned Node `bin` directories for managers other than nvm. Each base
+/// holds one subdirectory per installed release; only existing `bin`
+/// directories are returned.
+fn node_version_bins(home: &Path) -> Vec<PathBuf> {
+    // (base directory, tail from a version directory to its `bin`)
+    let layouts: Vec<(PathBuf, Vec<&str>)> = vec![
+        (
+            home.join(".local")
+                .join("share")
+                .join("fnm")
+                .join("node-versions"),
+            vec!["installation", "bin"],
+        ),
+        (
+            home.join(".fnm").join("node-versions"),
+            vec!["installation", "bin"],
+        ),
+        (
+            home.join(".local")
+                .join("share")
+                .join("mise")
+                .join("installs")
+                .join("node"),
+            vec!["bin"],
+        ),
+        (
+            home.join(".volta").join("tools").join("image").join("node"),
+            vec!["bin"],
+        ),
+        (
+            home.join(".asdf").join("installs").join("nodejs"),
+            vec!["bin"],
+        ),
+        (home.join("n").join("versions").join("node"), vec!["bin"]),
+    ];
+    let mut bins = Vec::new();
+    for (base, tail) in layouts {
+        let Ok(entries) = std::fs::read_dir(&base) else {
+            continue;
+        };
+        let mut versions: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .filter(|path| path.is_dir())
+            .map(|path| tail.iter().fold(path, |path, part| path.join(part)))
+            .filter(|path| path.is_dir())
+            .collect();
+        versions.sort();
+        bins.extend(versions);
+    }
+    // `n` also defaults to a system-wide tree outside `$HOME`.
+    #[cfg(not(windows))]
+    {
+        let system_n = PathBuf::from("/usr/local/n/versions/node");
+        if let Ok(entries) = std::fs::read_dir(&system_n) {
+            let mut versions: Vec<PathBuf> = entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.is_dir())
+                .map(|path| path.join("bin"))
+                .filter(|path| path.is_dir())
+                .collect();
+            versions.sort();
+            bins.extend(versions);
+        }
+    }
+    bins
 }
 
 /// System-wide locations that GUI launches often miss but interactive shells
@@ -155,7 +255,11 @@ fn system_fallback_directories() -> Vec<PathBuf> {
         [
             "/opt/homebrew/bin",
             "/opt/homebrew/sbin",
+            // Unlinked Homebrew Node kegs keep a `node` binary here even when
+            // the versioned formula is not linked into `/opt/homebrew/bin`.
+            "/opt/homebrew/opt/node/bin",
             "/usr/local/bin",
+            "/usr/local/opt/node/bin",
             "/opt/local/bin",
             "/home/linuxbrew/.linuxbrew/bin",
             "/home/linuxbrew/.linuxbrew/sbin",
@@ -210,9 +314,16 @@ fn shell_path_directories() -> Vec<PathBuf> {
     }
 
     for shell in shells {
+        // Fish lists PATH differently; join with `:` so the output splits
+        // like POSIX shells. Only a constant script ever runs.
+        let probe = if shell.file_name().is_some_and(|name| name == "fish") {
+            "string join : $PATH"
+        } else {
+            "printf %s \"$PATH\""
+        };
         let mut command = std::process::Command::new(&shell);
         command
-            .args(["-l", "-c", "printf %s \"$PATH\""])
+            .args(["-l", "-c", probe])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
@@ -298,15 +409,30 @@ fn build_child_path(parent: Option<&Path>, directories: &[PathBuf]) -> Option<Os
     std::env::join_paths(ordered).ok()
 }
 
+/// Directory holding one runtime binary (for example `node`) inside the
+/// discovery directories, if present.
+fn find_runtime_dir(directories: &[PathBuf], binary: &str) -> Option<PathBuf> {
+    find_on_path_in(directories, binary).and_then(|path| path.parent().map(Path::to_path_buf))
+}
+
 /// Augmented `PATH` for one tool binary. Installed CLIs are often runtime
-/// shims (`codex` is a `#!/usr/bin/env node` script): the bundled app's own
-/// sparse environment would make the child fail with "interpreter not found"
-/// even though discovery resolved the tool. Same combined directories as
-/// lookup, so the child sees at least what discovery saw. Returns `None`
-/// when no value can be built, in which case callers inherit the parent
-/// environment unchanged.
+/// shims (`claude` installed through bun/npm is a `#!/usr/bin/env node`
+/// script, as is `codex`): the bundled app's own sparse environment would
+/// make the child fail with "interpreter not found" even though discovery
+/// resolved the tool. Same combined directories as lookup, so the child sees
+/// at least what discovery saw, with the tool's own directory first and the
+/// resolved `node` directory promoted right behind it (a shim in
+/// `~/.bun/bin` rarely sits next to its `node` in an nvm/fnm/mise tree).
+/// Returns `None` when no value can be built, in which case callers inherit
+/// the parent environment unchanged.
 pub(crate) fn cli_child_path_env(binary: &Path) -> Option<OsString> {
-    build_child_path(binary.parent(), &search_directories())
+    let directories = search_directories();
+    let mut combined = Vec::new();
+    if let Some(node_dir) = find_runtime_dir(&directories, "node") {
+        combined.push(node_dir);
+    }
+    combined.extend(directories);
+    build_child_path(binary.parent(), &combined)
 }
 
 /// Runs a CLI with fixed arguments and a timeout. Only caller-chosen constant
@@ -1054,6 +1180,17 @@ pub fn claude_efforts(model: &str) -> Vec<String> {
     levels.iter().map(|v| v.to_string()).collect()
 }
 
+/// User-selectable API effort overrides, independent of provider/model identity.
+/// The endpoint decides which values it accepts; Default omits the parameter.
+fn custom_reasoning_efforts() -> Vec<String> {
+    [
+        "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect()
+}
+
 /// Validate at both save and execution boundaries. Default passes no override.
 pub fn validate_reasoning_effort(
     data_dir: &Path,
@@ -1073,7 +1210,9 @@ pub fn validate_reasoning_effort(
     if !valid_effort_token(effort) {
         return Err(invalid());
     }
-    let supported = if agent == "claude_code" {
+    let supported = if agent == "agy" {
+        Some(vec!["low".into(), "medium".into(), "high".into()])
+    } else if agent == "claude_code" {
         Some(claude_efforts(model))
     } else if matches!(agent, "codex" | "opencode") {
         list_translation_models(data_dir, agent)?
@@ -1081,6 +1220,10 @@ pub fn validate_reasoning_effort(
             .into_iter()
             .find(|entry| entry.id == model)
             .and_then(|entry| entry.reasoning_efforts)
+    } else if let Some(TranslationAgent::Custom(id)) = TranslationAgent::parse(agent) {
+        let conn = open_settings_db(data_dir)?;
+        let _ = ai_providers::get_secret(&conn, &id)?;
+        Some(custom_reasoning_efforts())
     } else {
         return Err(invalid());
     };
@@ -1097,6 +1240,61 @@ pub fn validate_reasoning_effort(
         return Err(invalid());
     }
     Ok(Some(effort.to_string()))
+}
+
+fn parse_agy_models(text: &str) -> Vec<TranslationModel> {
+    let mut seen = HashSet::new();
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.trim().splitn(2, char::is_whitespace);
+            let id = clean_model_id(parts.next()?)?;
+            if !id.contains('-')
+                || !id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+                || !seen.insert(id.clone())
+            {
+                return None;
+            }
+            let label = parts
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&id)
+                .to_string();
+            Some(TranslationModel {
+                id,
+                label,
+                detail: None,
+                reasoning_efforts: Some(vec!["low".into(), "medium".into(), "high".into()]),
+            })
+        })
+        .take(MAX_MODELS)
+        .collect()
+}
+
+fn parse_grok_models(text: &str) -> Vec<TranslationModel> {
+    let mut seen = HashSet::new();
+    text.lines()
+        .filter_map(|line| {
+            let id = line
+                .trim()
+                .trim_start_matches(['*', '-', ' '])
+                .split_whitespace()
+                .next()?;
+            let id = clean_model_id(id).filter(|id| id.starts_with("grok-"))?;
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            Some(TranslationModel {
+                label: id.clone(),
+                id,
+                detail: None,
+                reasoning_efforts: None,
+            })
+        })
+        .take(MAX_MODELS)
+        .collect()
 }
 
 /// Parses an OpenAI-compatible `/models` body (`{ data: [{ id }] }`).
@@ -1177,6 +1375,23 @@ fn find_cli_or_unavailable(id: CliProviderId) -> Result<PathBuf, AppError> {
     })
 }
 
+fn opencode_model_output(binary: &Path) -> Option<std::process::Output> {
+    // v1 exposes variants with --verbose. v2 removed that flag and
+    // supports a private server, avoiding a stalled background service.
+    for args in [
+        &["models", "--verbose"][..],
+        &["models", "--standalone"][..],
+        &["models"][..],
+    ] {
+        if let Ok(output) = run_cli_output(binary, args, MODEL_LIST_TIMEOUT)
+            && output.status.success()
+        {
+            return Some(output);
+        }
+    }
+    None
+}
+
 pub fn list_translation_models(
     data_dir: &Path,
     agent: &str,
@@ -1187,6 +1402,25 @@ pub fn list_translation_models(
         return Err(invalid_agent());
     };
     match parsed {
+        TranslationAgent::Cli(CliProviderId::Grok) => {
+            let binary = find_cli_or_unavailable(CliProviderId::Grok)?;
+            if let Ok(output) =
+                run_cli_output(&binary, &["--no-auto-update", "models"], MODEL_LIST_TIMEOUT)
+                && output.status.success()
+            {
+                let models = parse_grok_models(&String::from_utf8_lossy(&output.stdout));
+                if !models.is_empty() {
+                    return Ok(TranslationModelList { agent: "grok".into(), source: "live".into(), models,
+                        message: "Model list from Grok Build. Model listing does not verify your account access.".into() });
+                }
+            }
+            Ok(TranslationModelList {
+                agent: "grok".into(),
+                source: "catalog".into(),
+                models: known_models(&[("grok-4.6", "Grok 4.6"), ("grok-4.5", "Grok 4.5"), ("grok-4.7", "Grok 4.7")]),
+                message: "Grok Build catalog; sign in with grok login. Enter another model ID supported by your account if needed.".into(),
+            })
+        }
         TranslationAgent::Cli(CliProviderId::Codex) => {
             let binary = find_cli_or_unavailable(CliProviderId::Codex)?;
             // Offline-first: the bundled catalog needs no network.
@@ -1217,9 +1451,9 @@ pub fn list_translation_models(
         }
         TranslationAgent::Cli(CliProviderId::Opencode) => {
             let binary = find_cli_or_unavailable(CliProviderId::Opencode)?;
-            // No `--refresh`: reads the local cache, so this stays offline.
-            match run_cli_output(&binary, &["models", "--verbose"], MODEL_LIST_TIMEOUT) {
-                Ok(output) if output.status.success() => {
+            // Never refresh the provider cache or send chapter content here.
+            match opencode_model_output(&binary) {
+                Some(output) => {
                     let models = parse_opencode_models(&String::from_utf8_lossy(&output.stdout));
                     if models.is_empty() {
                         Ok(TranslationModelList {
@@ -1245,6 +1479,22 @@ pub fn list_translation_models(
                 )),
             }
         }
+        TranslationAgent::Cli(CliProviderId::Agy) => {
+            let binary = find_cli_or_unavailable(CliProviderId::Agy)?;
+            let output = run_cli_output(&binary, &["models"], MODEL_LIST_TIMEOUT)?;
+            if !output.status.success() {
+                return Err(AppError::new(
+                    "models_unavailable",
+                    "Antigravity models could not be loaded. Authenticate in agy first, then retry.",
+                ));
+            }
+            Ok(TranslationModelList {
+                agent: "agy".into(),
+                source: "live".into(),
+                models: parse_agy_models(&String::from_utf8_lossy(&output.stdout)),
+                message: "Live list from agy; a model ID can also be entered manually.".into(),
+            })
+        }
         TranslationAgent::Cli(CliProviderId::ClaudeCode) => Ok(TranslationModelList {
             agent: CliProviderId::ClaudeCode.as_str().to_string(),
             source: "catalog".to_string(),
@@ -1261,12 +1511,17 @@ pub fn list_translation_models(
         TranslationAgent::Custom(id) => {
             let secret = ai_providers::get_secret(&conn, &id)?;
             match fetch_openai_models(&secret.base_url, &secret.api_key) {
-                Ok(models) if !models.is_empty() => Ok(TranslationModelList {
-                    agent: format!("custom:{id}"),
-                    source: "live".to_string(),
-                    models,
-                    message: "Live list from the provider.".to_string(),
-                }),
+                Ok(mut models) if !models.is_empty() => {
+                    for model in &mut models {
+                        model.reasoning_efforts = Some(custom_reasoning_efforts());
+                    }
+                    Ok(TranslationModelList {
+                        agent: format!("custom:{id}"),
+                        source: "live".to_string(),
+                        models,
+                        message: "Live list from the provider.".to_string(),
+                    })
+                }
                 _ => {
                     let fallback = clean_model_id(&secret.model);
                     Ok(TranslationModelList {
@@ -1277,7 +1532,7 @@ pub fn list_translation_models(
                                 id: id.clone(),
                                 label: id,
                                 detail: Some("Saved model".to_string()),
-                                reasoning_efforts: None,
+                                reasoning_efforts: Some(custom_reasoning_efforts()),
                             })
                             .into_iter()
                             .collect(),
@@ -1322,6 +1577,120 @@ pub fn set_translation_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grok_provider_identity_discovery_and_selection() {
+        let models = parse_grok_models(
+            "Default model: grok-4.6\nAvailable models:\n * grok-4.6 (default)\n - grok-4.5\n - grok-4.6\n",
+        );
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["grok-4.6", "grok-4.5"]
+        );
+        assert_eq!(CliProviderId::parse("grok"), Some(CliProviderId::Grok));
+        assert!(CliProviderId::all().contains(&CliProviderId::Grok));
+        let home = tempfile::tempdir().unwrap();
+        assert!(fallback_directories_for(home.path()).contains(&home.path().join(".grok/bin")));
+        let selection = set_translation_selection(home.path(), "grok", "grok-4.7", None).unwrap();
+        assert_eq!(selection.agent, "grok");
+        assert_eq!(
+            get_translation_selection(home.path())
+                .unwrap()
+                .unwrap()
+                .model,
+            "grok-4.7"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opencode_v2_catalog_falls_back_to_standalone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("opencode.cmd");
+        // Reproduce v2 rejecting --verbose and its broken shared service.
+        std::fs::write(
+            &cli,
+            "@echo off\r\nif \"%2\"==\"--verbose\" exit /b 1\r\nif not \"%2\"==\"--standalone\" exit /b 2\r\necho opencode/example-model\r\n",
+        )
+        .unwrap();
+        let output = opencode_model_output(&cli).expect("private server fallback");
+        let models = parse_opencode_models(&String::from_utf8_lossy(&output.stdout));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "opencode/example-model");
+    }
+
+    #[test]
+    fn agy_models_selection_and_discovery() {
+        let models = parse_agy_models(
+            "Available models:\ngemini-example-high  Gemini Example (High)\ngemini-example-high Duplicate\n",
+        );
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].label, "Gemini Example (High)");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path()
+                .join(format!("agy{}", std::env::consts::EXE_SUFFIX)),
+            b"stub",
+        )
+        .unwrap();
+        assert!(cli_available_in(
+            &[dir.path().to_path_buf()],
+            CliProviderId::Agy
+        ));
+        let saved =
+            set_translation_selection(dir.path(), "agy", "gemini-example-high", Some("high"))
+                .unwrap();
+        assert_eq!(
+            get_translation_selection(dir.path())
+                .unwrap()
+                .unwrap()
+                .agent,
+            saved.agent
+        );
+        assert!(validate_reasoning_effort(dir.path(), "agy", "m", Some("xhigh")).is_err());
+    }
+
+    #[test]
+    fn custom_effort_works_for_any_provider_and_model() {
+        let dir = tempfile::tempdir().unwrap();
+        for base_url in [
+            "https://api.z.ai/api/paas/v4",
+            "https://compatible.example/v1",
+            "http://localhost:1234/v1",
+        ] {
+            let provider = save_ai_custom_provider(
+                dir.path(),
+                SaveCustomInput {
+                    id: None,
+                    name: "Custom".into(),
+                    base_url: base_url.into(),
+                    api_key: Some("synthetic".into()),
+                    model: "saved-model".into(),
+                },
+            )
+            .unwrap();
+            let agent = format!("custom:{}", provider.id);
+            for model in ["glm-5.3", "glm-5.3-flash", "arbitrary-manual-model"] {
+                for effort in custom_reasoning_efforts() {
+                    let saved = set_translation_selection(dir.path(), &agent, model, Some(&effort))
+                        .unwrap();
+                    assert_eq!(saved.reasoning_effort.as_deref(), Some(effort.as_str()));
+                    assert_eq!(
+                        validate_reasoning_effort(dir.path(), &agent, model, Some(&effort))
+                            .unwrap(),
+                        Some(effort)
+                    );
+                }
+                assert_eq!(
+                    validate_reasoning_effort(dir.path(), &agent, model, None).unwrap(),
+                    None
+                );
+                assert!(
+                    validate_reasoning_effort(dir.path(), &agent, model, Some("invalid")).is_err()
+                );
+            }
+        }
+    }
 
     #[test]
     fn codex_catalog_reads_slug_and_advertised_efforts() {
@@ -1430,7 +1799,9 @@ opencode/no-adjustment
     #[test]
     fn path_lookup_finds_staged_binaries_without_a_shell() {
         let dir = tempfile::tempdir().expect("temp dir");
-        let binary = dir.path().join("codex");
+        let binary = dir
+            .path()
+            .join(format!("codex{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&binary, b"stub").expect("stage binary");
         let found = find_on_path_in(&[dir.path().to_path_buf()], "codex").expect("binary found");
         assert_eq!(found, binary);
@@ -1450,6 +1821,73 @@ opencode/no-adjustment
         let found =
             find_on_path_in(&[dir.path().to_path_buf()], "codex").expect("Windows shim found");
         assert_eq!(found, windows_shim);
+    }
+
+    #[test]
+    fn windows_lookup_skips_npm_posix_shims_and_prefers_executables() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let directories = vec![dir.path().to_path_buf()];
+        for tool in ["codex", "opencode", "claude", "agy"] {
+            let candidates = candidate_file_names_for(tool, true);
+            std::fs::write(dir.path().join(tool), b"#!/bin/sh\n").unwrap();
+            assert_eq!(find_candidate_in(&directories, &candidates), None);
+            for extension in ["bat", "cmd", "exe"] {
+                let launcher = dir.path().join(format!("{tool}.{extension}"));
+                std::fs::write(&launcher, b"stub").unwrap();
+                assert_eq!(find_candidate_in(&directories, &candidates), Some(launcher));
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_check_launches_cmd_beside_posix_shim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let bin = dir.path().join("npm with spaces");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("codex"), b"#!/bin/sh\nexit 1\n").unwrap();
+        std::fs::write(
+            bin.join("codex.cmd"),
+            b"@echo off\r\necho codex-test 1.0\r\n",
+        )
+        .unwrap();
+        let binary = find_cli_binary_in(&[bin.clone()], CliProviderId::Codex).unwrap();
+        assert_eq!(binary, bin.join("codex.cmd"));
+        assert_eq!(probe_cli_version(&binary).unwrap(), "codex-test 1.0");
+    }
+
+    #[test]
+    fn windows_agy_lookup_uses_local_appdata_and_profile_fallback() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let home = dir.path().join("profile with spaces");
+        let local = dir.path().join("relocated local data");
+        let default_bin = home.join("AppData/Local/agy/bin");
+        let relocated_bin = local.join("agy/bin");
+        let directories = windows_agy_directories(&home, Some(&local));
+        assert_eq!(
+            directories,
+            vec![relocated_bin.clone(), default_bin.clone()]
+        );
+        assert_eq!(
+            windows_agy_directories(&home, None),
+            vec![default_bin.clone()]
+        );
+        assert_eq!(
+            windows_agy_directories(&home, Some(Path::new("relative"))),
+            vec![default_bin.clone()]
+        );
+        assert_eq!(
+            windows_agy_directories(&home, Some(&home.join("AppData/Local"))),
+            vec![default_bin.clone()]
+        );
+        // Exercise real discovery without relying on this test process's PATH.
+        let filename = format!("agy{}", std::env::consts::EXE_SUFFIX);
+        for bin in [default_bin, relocated_bin] {
+            std::fs::create_dir_all(&bin).expect("stage install directory");
+            let binary = bin.join(&filename);
+            std::fs::write(&binary, b"stub").expect("stage agy");
+            assert_eq!(find_on_path_in(&directories, "agy"), Some(binary));
+        }
     }
 
     #[test]
@@ -1676,7 +2114,9 @@ opencode/no-adjustment
         // misses per-user installs (opencode, claude, nvm shims), so the
         // combined lookup must still resolve a staged tool directory.
         let dir = tempfile::tempdir().expect("temp dir");
-        let binary = dir.path().join("opencode");
+        let binary = dir
+            .path()
+            .join(format!("opencode{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&binary, b"stub").expect("stage binary");
         let directories = vec![dir.path().to_path_buf()];
         let found = find_cli_binary_in(&directories, CliProviderId::Opencode).expect("tool found");
@@ -1687,7 +2127,7 @@ opencode/no-adjustment
         let home = tempfile::tempdir().expect("temp home");
         let tool_dir = home.path().join(".opencode/bin");
         std::fs::create_dir_all(&tool_dir).expect("stage tool dir");
-        let staged = tool_dir.join("opencode");
+        let staged = tool_dir.join(format!("opencode{}", std::env::consts::EXE_SUFFIX));
         std::fs::write(&staged, b"stub").expect("stage tool");
         let fallbacks = fallback_directories_for(home.path());
         assert_eq!(

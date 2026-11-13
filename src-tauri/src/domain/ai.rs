@@ -10,6 +10,8 @@ pub enum CliProviderId {
     Codex,
     Opencode,
     ClaudeCode,
+    Agy,
+    Grok,
 }
 
 impl CliProviderId {
@@ -18,6 +20,8 @@ impl CliProviderId {
             CliProviderId::Codex => "codex",
             CliProviderId::Opencode => "opencode",
             CliProviderId::ClaudeCode => "claude_code",
+            CliProviderId::Agy => "agy",
+            CliProviderId::Grok => "grok",
         }
     }
 
@@ -26,6 +30,8 @@ impl CliProviderId {
             CliProviderId::Codex => "Codex",
             CliProviderId::Opencode => "OpenCode",
             CliProviderId::ClaudeCode => "Claude Code",
+            CliProviderId::Agy => "Antigravity (agy)",
+            CliProviderId::Grok => "Grok Build (account login)",
         }
     }
 
@@ -36,6 +42,8 @@ impl CliProviderId {
             CliProviderId::Codex => &["codex"],
             CliProviderId::Opencode => &["opencode"],
             CliProviderId::ClaudeCode => &["claude"],
+            CliProviderId::Agy => &["agy"],
+            CliProviderId::Grok => &["grok"],
         }
     }
 
@@ -44,15 +52,19 @@ impl CliProviderId {
             "codex" => Some(CliProviderId::Codex),
             "opencode" => Some(CliProviderId::Opencode),
             "claude_code" => Some(CliProviderId::ClaudeCode),
+            "agy" => Some(CliProviderId::Agy),
+            "grok" => Some(CliProviderId::Grok),
             _ => None,
         }
     }
 
-    pub fn all() -> [CliProviderId; 3] {
+    pub fn all() -> [CliProviderId; 5] {
         [
             CliProviderId::Codex,
             CliProviderId::Opencode,
             CliProviderId::ClaudeCode,
+            CliProviderId::Agy,
+            CliProviderId::Grok,
         ]
     }
 }
@@ -163,10 +175,10 @@ pub struct AiTranslationStart {
 pub struct AiTranslationEvent {
     pub job_id: String,
     pub chapter_id: String,
-    /// `started` | `stream` | `done` | `failed` | `cancelled`.
+    /// `started` | `status` | `stream` | `done` | `needs_repair` | `failed` | `cancelled`.
     pub kind: String,
     pub proposal_html: Option<String>,
-    /// Running full-so-far stdout for `stream` events; book-derived text
+    /// Full-so-far translated text for `stream` events; text
     /// shown locally only, never logged or telemetered.
     pub partial_text: Option<String>,
     /// Short human-readable outcome; never contains book text or secrets.
@@ -189,10 +201,10 @@ pub struct AiHtmlFixStart {
 pub struct AiHtmlFixEvent {
     pub job_id: String,
     pub chapter_id: String,
-    /// `started` | `stream` | `done` | `failed` | `cancelled`.
+    /// `started` | `status` | `stream` | `done` | `failed` | `cancelled`.
     pub kind: String,
     pub fixed_html: Option<String>,
-    /// Running full-so-far stdout for `stream` events; book-derived text
+    /// Full-so-far translated text for `stream` events; text
     /// shown locally only, never logged or telemetered.
     pub partial_text: Option<String>,
     /// Short human-readable outcome; never contains book text or secrets.

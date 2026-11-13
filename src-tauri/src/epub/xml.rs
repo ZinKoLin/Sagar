@@ -14,7 +14,11 @@ pub(crate) fn parse(text: &str) -> Result<roxmltree::Document<'_>, roxmltree::Er
                     .split_whitespace()
                     .collect::<Vec<_>>()
                     .join(" ");
-                if declaration != "html"
+                if declaration
+                    != r#"ncx PUBLIC "-//NISO//DTD ncx 2005-1//EN" "http://www.daisy.org/z3986/2005/ncx-2005-1.dtd""#
+                    && declaration
+                        != "ncx PUBLIC '-//NISO//DTD ncx 2005-1//EN' 'http://www.daisy.org/z3986/2005/ncx-2005-1.dtd'"
+                    && declaration != "html"
                     && declaration
                         != r#"html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd""#
                     && declaration

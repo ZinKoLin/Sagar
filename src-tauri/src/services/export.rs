@@ -23,6 +23,9 @@ pub struct ExportRequest {
     /// Draft-only: when false, chapters without any saved translation are
     /// omitted from the output instead of falling back to original content.
     pub include_original: bool,
+    pub bilingual: bool,
+    pub bilingual_alignments:
+        std::collections::HashMap<String, Vec<crate::domain::BilingualAlignment>>,
 }
 
 pub fn export_epub(data_dir: &Path, request: ExportRequest) -> Result<ExportOutcome, AppError> {
@@ -161,6 +164,13 @@ pub fn export_epub(data_dir: &Path, request: ExportRequest) -> Result<ExportOutc
                 |row| row.get(0),
             )?
         },
+        source_language: conn.query_row(
+            "SELECT source_language FROM projects WHERE id = ?1",
+            rusqlite::params![project_id],
+            |row| row.get(0),
+        )?,
+        bilingual: request.bilingual,
+        bilingual_alignments: request.bilingual_alignments,
         chapters,
         include_original,
         load_blocks: Box::new(move |chapter_id: &str| {

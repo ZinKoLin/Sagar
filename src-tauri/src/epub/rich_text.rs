@@ -82,6 +82,8 @@ fn is_xhtml_document_tag(tag: &str) -> bool {
             | "blockquote"
             | "hr"
             | "table"
+            | "colgroup"
+            | "col"
             | "thead"
             | "tbody"
             | "tfoot"
@@ -114,6 +116,14 @@ fn is_xhtml_document_tag(tag: &str) -> bool {
             | "rp"
             | "picture"
             | "source"
+            | "small"
+            | "abbr"
+            | "cite"
+            | "dfn"
+            | "kbd"
+            | "samp"
+            | "var"
+            | "mark"
     )
 }
 
@@ -132,6 +142,7 @@ fn is_xhtml_block(tag: &str) -> bool {
             | "blockquote"
             | "hr"
             | "table"
+            | "colgroup"
             | "thead"
             | "tbody"
             | "tfoot"
@@ -280,6 +291,32 @@ fn is_safe_external_link(value: &str) -> bool {
         && !lower.starts_with("vbscript:")
 }
 
+fn is_safe_kindle_embed_link(value: &str) -> bool {
+    // Legacy Kindle EPUBs use this opaque, non-network scheme to link to an
+    // embedded image. Keep only a hexadecimal resource id and a known image
+    // MIME type; arbitrary kindle: URLs and extra parameters remain rejected.
+    let lower = value.trim().to_ascii_lowercase();
+    let Some(reference) = lower.strip_prefix("kindle:embed:") else {
+        return false;
+    };
+    let (id, mime) = reference
+        .split_once('?')
+        .map_or((reference, None), |(id, query)| (id, Some(query)));
+    !id.is_empty()
+        && id.len() <= 16
+        && id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && mime.is_none_or(|mime| {
+            matches!(
+                mime,
+                "mime=image/jpg"
+                    | "mime=image/jpeg"
+                    | "mime=image/png"
+                    | "mime=image/gif"
+                    | "mime=image/webp"
+            )
+        })
+}
+
 /// Presentational attributes real EPUBs carry on tables/cells/images.
 /// Inert strings only; event handlers, URLs and positioning CSS are handled
 /// separately. Values are escaped on serialization.
@@ -289,10 +326,12 @@ fn is_preserved_layout_attr(tag: &str, name: &str) -> bool {
         (
             "table",
             "border" | "cellpadding" | "cellspacing" | "width" | "align"
-        ) | (
-            "td" | "th",
-            "width" | "height" | "align" | "valign" | "scope" | "abbr" | "headers"
-        ) | ("img", "width" | "height" | "align")
+        ) | ("colgroup" | "col", "span" | "width")
+            | (
+                "td" | "th",
+                "width" | "height" | "align" | "valign" | "scope" | "abbr" | "headers"
+            )
+            | ("img", "width" | "height" | "align")
             | ("ol" | "ul", "type")
             | ("li", "value")
     )
@@ -365,7 +404,7 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 && node.parent_element().is_some_and(|parent| {
                     matches!(
                         parent.tag_name().name(),
-                        "table" | "thead" | "tbody" | "tfoot" | "tr"
+                        "table" | "colgroup" | "thead" | "tbody" | "tfoot" | "tr"
                     )
                 })
             {
@@ -387,6 +426,30 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
         let ns = node.tag_name().namespace();
         let is_svg = ns == Some(SVG_NS);
         let is_xhtml = ns == Some(XHTML_NS);
+        // A line break has no meaning in a table column definition. Some
+        // editors insert <br> while reserializing whitespace in <colgroup>;
+        // discard only that invalid, content-free node and retain every <col>.
+        if document
+            && is_xhtml
+            && tag == "br"
+            && node
+                .parent_element()
+                .is_some_and(|parent| parent.tag_name().name() == "colgroup")
+        {
+            return Ok(());
+        }
+        // `<br>` has no meaning in SVG. Some Rich-text serializers insert it
+        // between SVG children while normalizing whitespace; discard only
+        // this empty, content-free node so the actual artwork is preserved.
+        if document
+            && is_svg
+            && tag == "br"
+            && node
+                .parent_element()
+                .is_some_and(|parent| parent.tag_name().namespace() == Some(SVG_NS))
+        {
+            return Ok(());
+        }
         // Inline (legacy block) fragments keep the original tight schema.
         // Whole-chapter documents accept the reader's structural and SVG
         // tags so copied originals round-trip instead of being rejected.
@@ -447,6 +510,14 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                     | "ruby"
                     | "rt"
                     | "rp"
+                    | "small"
+                    | "abbr"
+                    | "cite"
+                    | "dfn"
+                    | "kbd"
+                    | "samp"
+                    | "var"
+                    | "mark"
             ) && (is_block || is_svg)
             {
                 return Err(AppError::new(
@@ -476,17 +547,30 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                     "Only <source> or <img> can appear inside <picture>, found <{tag}>."
                 )));
             }
-            if matches!(parent, "table")
-                && !matches!(tag, "caption" | "thead" | "tbody" | "tfoot" | "tr")
-                || matches!(parent, "thead" | "tbody" | "tfoot") && tag != "tr"
-                || parent == "tr" && !matches!(tag, "td" | "th")
-            {
+            let invalid_table_child = if parent == "table"
+                && !matches!(
+                    tag,
+                    "caption" | "colgroup" | "thead" | "tbody" | "tfoot" | "tr"
+                ) {
+                Some("A table can contain captions, column groups, row groups, or rows.")
+            } else if parent == "colgroup" && tag != "col" {
+                Some("A column group can contain only <col> elements.")
+            } else if matches!(parent, "thead" | "tbody" | "tfoot") && tag != "tr" {
+                Some("A table row group can contain only <tr> elements.")
+            } else if parent == "tr" && !matches!(tag, "td" | "th") {
+                Some("A table row can contain only <td> or <th> cells.")
+            } else {
+                None
+            };
+            if let Some(reason) = invalid_table_child {
                 return Err(AppError::new(
                     "invalid_translation",
-                    "Tables must contain rows, and rows must contain header or data cells.",
+                    format!("{reason} Found <{tag}> inside <{parent}>."),
                 ));
             }
             if matches!(tag, "td" | "th") && parent != "tr"
+                || tag == "colgroup" && parent != "table"
+                || tag == "col" && parent != "colgroup"
                 || tag == "tr" && !matches!(parent, "table" | "thead" | "tbody" | "tfoot")
                 || matches!(tag, "thead" | "tbody" | "tfoot" | "caption") && parent != "table"
             {
@@ -527,6 +611,14 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
         // attributes originals rely on (SVG image references, EPUB semantics
         // and xml:lang). Everything else — event handlers, scripts, network
         // CSS — stays rejected.
+        let paragraph_color = if document && is_xhtml && tag == "p" {
+            node.attribute("color")
+        } else {
+            None
+        };
+        if let Some(color) = paragraph_color {
+            validate_style(&format!("color:{color}"))?;
+        }
         for attr in node.attributes() {
             let attr_ns = attr.namespace();
             let attr_name = attr.name();
@@ -590,6 +682,9 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                         | "version"
                 ));
             if !(per_tag_ok
+                || paragraph_color.is_some() && attr_name == "color"
+                // Accept old/book targets, then omit them on serialization.
+                || document && is_xhtml && tag == "a" && attr_name == "target"
                 || document
                     && (matches!(
                         attr_name,
@@ -624,6 +719,15 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
         for attr in node.attributes() {
             let attr_ns = attr.namespace();
             let attr_name = attr.name();
+            // Browsing-context targets are unnecessary in translated books.
+            // Normalize them away, including when reopening an older draft.
+            if document && is_xhtml && tag == "a" && attr_ns.is_none() && attr_name == "target" {
+                continue;
+            }
+            // Normalize legacy HTML paragraph colors to safe XHTML inline CSS.
+            if paragraph_color.is_some() && matches!(attr_name, "color" | "style") {
+                continue;
+            }
             if attr_ns == Some(XLINK_NS) && attr_name == "href" {
                 svg_image_href = Some(attr.value().to_string());
                 continue;
@@ -652,7 +756,7 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                     ));
                 }
             }
-            if matches!(attr_name, "colspan" | "rowspan")
+            if matches!(attr_name, "colspan" | "rowspan" | "span")
                 && attr
                     .value()
                     .parse::<u16>()
@@ -752,6 +856,7 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 if !is_relative_resource(value)
                     && !(value.starts_with('#') && !value.contains(':'))
                     && !(document && is_safe_external_link(value))
+                    && !(document && is_safe_kindle_embed_link(value))
                 {
                     return Err(invalid_detail(format!(
                         "Unsupported <a href=\"{value}\">: use a book-relative link, an in-chapter #anchor, or http(s)/mailto."
@@ -768,6 +873,14 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 attr_name,
                 escape_html_text(attr.value())
             ));
+        }
+        if let Some(color) = paragraph_color {
+            let style = node
+                .attribute("style")
+                .map(|existing| format!("{existing};color:{color}"))
+                .unwrap_or_else(|| format!("color:{color}"));
+            validate_style(&style)?;
+            html.push_str(&format!(" style=\"{}\"", escape_html_text(&style)));
         }
         if is_svg && tag == "image" {
             let href = svg_image_href.filter(|v| !v.is_empty()).ok_or_else(|| {
@@ -795,7 +908,7 @@ fn validate_schema(fragment: &str, document: bool) -> Result<(String, String), A
                 "<source> needs a src or srcset attribute.".to_string(),
             ));
         }
-        if matches!(tag, "img" | "br" | "hr" | "source")
+        if matches!(tag, "img" | "br" | "hr" | "source" | "col")
             || (is_svg
                 && matches!(
                     tag,
@@ -883,6 +996,56 @@ mod document_tests {
             assert!(validate_document(html).is_err(), "{html}");
         }
     }
+
+    #[test]
+    fn preserves_safe_legacy_kindle_embedded_image_links() {
+        let source = "<p><a href=\"kindle:embed:0003?mime=image/jpg\"><img src=\"cover.jpg\" alt=\"Cover\"/></a></p>";
+        let (saved, _) = validate_document(source).expect("legacy embedded image link");
+        assert!(saved.contains("href=\"kindle:embed:0003?mime=image/jpg\""));
+        assert!(saved.contains("src=\"cover.jpg\""));
+
+        for href in [
+            "kindle:execute:0003",
+            "kindle:embed:0003?mime=text/html",
+            "kindle:embed:0003?mime=image/png&url=https://example.com",
+            "kindle:embed:../../secret?mime=image/jpg",
+        ] {
+            assert!(
+                validate_document(&format!("<a href=\"{href}\">image</a>")).is_err(),
+                "{href}"
+            );
+        }
+    }
+
+    #[test]
+    fn table_errors_name_the_invalid_cell_or_row_tag() {
+        let error = validate_document("<table><tbody><tr><p>Cell text</p></tr></tbody></table>")
+            .expect_err("a row cannot contain a paragraph instead of a cell");
+        assert!(
+            error
+                .message
+                .contains("A table row can contain only <td> or <th> cells."),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("Found <p> inside <tr>."),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn stray_breaks_inside_column_groups_are_removed_without_losing_columns() {
+        let html = "<table><colgroup><col/><br/><col/></colgroup><tbody><tr><td>မြန်မာ</td></tr></tbody></table>";
+        let (saved, _) = validate_document(html).expect("recover stray column-group break");
+        assert!(
+            saved.contains("<colgroup><col/><col/></colgroup>"),
+            "{saved}"
+        );
+        assert!(!saved.contains("<br"), "{saved}");
+        assert!(saved.contains("<td>မြန်မာ</td>"), "{saved}");
+    }
     #[test]
     fn preserved_book_links_layout_attrs_and_xml_lang_round_trip() {
         // Real books carry outbound links, xml:lang and table presentational
@@ -946,6 +1109,30 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
             ));
         };
         let property_name = property.trim().to_ascii_lowercase();
+        let value = value.trim();
+        let is_safe_margin = matches!(
+            property_name.as_str(),
+            "margin" | "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
+        ) && is_safe_margin_value(value);
+        let is_safe_padding = matches!(
+            property_name.as_str(),
+            "padding"
+                | "padding-top"
+                | "padding-right"
+                | "padding-bottom"
+                | "padding-left"
+                | "padding-inline"
+                | "padding-inline-start"
+                | "padding-inline-end"
+                | "padding-block"
+                | "padding-block-start"
+                | "padding-block-end"
+        ) && is_safe_padding_value(value);
+        let is_safe_border = is_safe_border_declaration(&property_name, value);
+        let is_safe_dimension = matches!(
+            property_name.as_str(),
+            "width" | "height" | "min-width" | "max-width" | "min-height" | "max-height"
+        ) && is_safe_dimension_value(value);
         let ligature_value = property_name == "font-variant-ligatures"
             && !value.trim().is_empty()
             && value.trim().split_ascii_whitespace().all(|token| {
@@ -966,7 +1153,6 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
         let color_function = matches!(property_name.as_str(), "color" | "background-color")
             && ["rgb(", "rgba(", "hsl(", "hsla("].iter().any(|prefix| {
                 value
-                    .trim()
                     .strip_prefix(prefix)
                     .and_then(|body| body.strip_suffix(')'))
                     .is_some_and(|body| {
@@ -992,7 +1178,11 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
                 | "text-indent"
                 | "letter-spacing"
                 | "word-spacing"
-        ) || property_name == "font-variant-ligatures" && !ligature_value
+        ) && !is_safe_margin
+            && !is_safe_padding
+            && !is_safe_border
+            && !is_safe_dimension
+            || property_name == "font-variant-ligatures" && !ligature_value
             || value.contains(['@', '\\', '<', '>'])
             || value.contains(['(', ')']) && !color_function
         {
@@ -1008,9 +1198,224 @@ pub fn validate_style(style: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+fn is_safe_dimension_value(value: &str) -> bool {
+    if value == "auto" {
+        return true;
+    }
+    let number_end = value
+        .char_indices()
+        .find(|(_, character)| !(character.is_ascii_digit() || *character == '.'))
+        .map_or(value.len(), |(index, _)| index);
+    if number_end == 0 {
+        return false;
+    }
+    let number = &value[..number_end];
+    if number.matches('.').count() > 1
+        || number
+            .parse::<f32>()
+            .ok()
+            .is_none_or(|number| !number.is_finite() || number < 0.0)
+    {
+        return false;
+    }
+    matches!(
+        &value[number_end..],
+        "" | "%"
+            | "px"
+            | "em"
+            | "rem"
+            | "ex"
+            | "ch"
+            | "vw"
+            | "vh"
+            | "pt"
+            | "pc"
+            | "in"
+            | "cm"
+            | "mm"
+    )
+}
+
+/// Margins affect text block spacing, but never allow positioning, functions,
+/// URLs, negative offsets, or arbitrary CSS expressions.
+fn is_safe_margin_value(value: &str) -> bool {
+    let parts = value.split_ascii_whitespace().collect::<Vec<_>>();
+    !parts.is_empty()
+        && parts.len() <= 4
+        && parts.iter().all(|part| {
+            if *part == "auto" {
+                return true;
+            }
+            let number_end = part
+                .char_indices()
+                .find(|(_, character)| !(character.is_ascii_digit() || *character == '.'))
+                .map_or(part.len(), |(index, _)| index);
+            if number_end == 0 {
+                return false;
+            }
+            let number = &part[..number_end];
+            if number.matches('.').count() > 1
+                || number
+                    .parse::<f32>()
+                    .ok()
+                    .is_none_or(|number| !number.is_finite())
+                || number.starts_with('.') && number.len() == 1
+            {
+                return false;
+            }
+            let unit = &part[number_end..];
+            matches!(
+                unit,
+                "" | "%"
+                    | "px"
+                    | "em"
+                    | "rem"
+                    | "ex"
+                    | "ch"
+                    | "vw"
+                    | "vh"
+                    | "pt"
+                    | "pc"
+                    | "in"
+                    | "cm"
+                    | "mm"
+            )
+        })
+}
+
+/// Padding can space text blocks, but unlike margin it cannot use `auto` or
+/// negative values. Keep it to one to four plain non-negative lengths.
+fn is_safe_padding_value(value: &str) -> bool {
+    let parts = value.split_ascii_whitespace().collect::<Vec<_>>();
+    !parts.is_empty()
+        && parts.len() <= 4
+        && parts
+            .iter()
+            .all(|part| *part != "auto" && is_safe_margin_value(part))
+}
+
+fn is_safe_border_declaration(property: &str, value: &str) -> bool {
+    let is_border_property = matches!(
+        property,
+        "border"
+            | "border-top"
+            | "border-right"
+            | "border-bottom"
+            | "border-left"
+            | "border-width"
+            | "border-top-width"
+            | "border-right-width"
+            | "border-bottom-width"
+            | "border-left-width"
+            | "border-style"
+            | "border-top-style"
+            | "border-right-style"
+            | "border-bottom-style"
+            | "border-left-style"
+            | "border-color"
+            | "border-top-color"
+            | "border-right-color"
+            | "border-bottom-color"
+            | "border-left-color"
+    );
+    if !is_border_property {
+        return false;
+    }
+
+    let parts = value.split_ascii_whitespace().collect::<Vec<_>>();
+    if parts.is_empty() || parts.len() > if property == "border" { 3 } else { 4 } {
+        return false;
+    }
+    parts.iter().all(|part| {
+        let lower = part.to_ascii_lowercase();
+        let style = matches!(
+            lower.as_str(),
+            "none"
+                | "hidden"
+                | "dotted"
+                | "dashed"
+                | "solid"
+                | "double"
+                | "groove"
+                | "ridge"
+                | "inset"
+                | "outset"
+        );
+        let numeric_end = part
+            .char_indices()
+            .find(|(_, character)| !(character.is_ascii_digit() || *character == '.'))
+            .map_or(part.len(), |(index, _)| index);
+        let length = numeric_end > 0
+            && part[..numeric_end]
+                .parse::<f32>()
+                .is_ok_and(|number| number.is_finite() && number >= 0.0)
+            && matches!(
+                &part[numeric_end..],
+                "" | "px" | "em" | "rem" | "ex" | "ch" | "pt" | "pc" | "in" | "cm" | "mm"
+            );
+        let hex = part.strip_prefix('#').is_some_and(|digits| {
+            matches!(digits.len(), 3 | 4 | 6 | 8)
+                && digits
+                    .chars()
+                    .all(|character| character.is_ascii_hexdigit())
+        });
+        let named_color = !part.is_empty()
+            && part
+                .chars()
+                .all(|character| character.is_ascii_alphabetic());
+        style || length || hex || named_color
+    })
+}
+
 #[cfg(test)]
 mod copied_document_tests {
     use super::*;
+    #[test]
+    fn common_book_inline_semantics_and_protected_tables_are_export_safe() {
+        let input = include_str!("../../../tests/fixtures/editor/book-compatibility.xhtml").trim();
+        let (saved, text) = validate_document(input).expect("book formatting");
+        assert_eq!(saved, input);
+        assert!(text.contains("မြန်မာပုံပြင်"));
+        for tag in ["small", "abbr", "cite", "dfn", "kbd", "samp", "var", "mark"] {
+            assert!(validate_document(&format!("<{tag}><p>invalid block</p></{tag}>")).is_err());
+            assert!(
+                validate_document(&format!("<p><{tag} onclick=\"bad()\">text</{tag}></p>"))
+                    .is_err()
+            );
+        }
+    }
+    #[test]
+    fn translated_titlepage_removes_link_target_and_preserves_myanmar() {
+        let input = include_str!("../../../tests/fixtures/ai/link-target.xhtml").trim();
+        let (html, text) = validate_document(input).expect("translated titlepage");
+        assert!(!html.contains("target="));
+        assert!(html.contains("href=\"https://example.com/book\""));
+        assert!(text.contains("မြန်မာပုံပြင်များ"));
+        let (again, _) = validate_document(&html).expect("saved draft");
+        assert_eq!(again, html);
+        let preview = crate::epub::preview::sanitize_fragment(
+            &html,
+            "body",
+            "chapter.xhtml",
+            "epubres://test",
+        );
+        assert!(!preview.contains("target=\"_top\""));
+        assert!(preview.contains("href=\"\""));
+        for target in ["_self", "_blank", "_parent", "book-window"] {
+            let link =
+                format!("<p><a href=\"chapter.xhtml#note\" target=\"{target}\">note</a></p>");
+            let (normalized, _) = validate_document(&link).expect("normalized link");
+            assert!(!normalized.contains("target="));
+            assert!(normalized.contains("chapter.xhtml#note"));
+        }
+        for bad in [
+            "<p target=\"_top\">text</p>",
+            "<a href=\"javascript:alert(1)\" target=\"_top\">text</a>",
+            "<a href=\"https://example.com\" target=\"_top\" onclick=\"evil()\">text</a>",
+        ] {
+            assert!(validate_document(bad).is_err(), "{bad}");
+        }
+    }
     #[test]
     fn accepts_complete_original_toc_document_and_retains_attributes_links() {
         let input = "<?xml version='1.0' encoding='utf-8'?><html xmlns=\"http://www.w3.org/1999/xhtml\"><head><link rel=\"stylesheet\" href=\"stylesheet.css\"/></head><body><p class=\"border1\" style=\"color:#000000\">Contents</p><p class=\"toc2\"><a href=\"174.html#section\">Chapter 174</a></p></body></html>";
@@ -1024,6 +1429,15 @@ mod copied_document_tests {
         assert!(text.contains("Chapter 174"));
     }
     #[test]
+    fn converts_legacy_paragraph_color_attribute_to_safe_style() {
+        let (html, _) =
+            validate_document("<p color=\"#336699\" style=\"text-align:center\">Colored text</p>")
+                .expect("legacy paragraph color");
+        assert!(html.contains("style=\"text-align:center;color:#336699\""));
+        assert!(!html.contains(" color="));
+        assert!(validate_document("<p color=\"url(javascript:alert(1))\">x</p>").is_err());
+    }
+    #[test]
     fn rejects_active_css_and_event_attributes() {
         for input in [
             "<p style=\"background-color:url(https://example.com/a)\">x</p>",
@@ -1031,6 +1445,80 @@ mod copied_document_tests {
             "<p class=\"toc2\" onclick=\"evil()\">x</p>",
         ] {
             assert!(validate_document(input).is_err());
+        }
+    }
+
+    #[test]
+    fn accepts_safe_margin_spacing_and_rejects_positioning_values() {
+        let source = "<p style=\"margin: 0 0 1em; margin-left: 0.5rem\">text</p>";
+        let (html, _) = validate_document(source).expect("safe text spacing");
+        assert!(html.contains("margin: 0 0 1em"));
+        for style in [
+            "margin: url(https://example.com)",
+            "margin: -10px",
+            "margin: 1px; position: fixed",
+            "margin: calc(100% - 1px)",
+        ] {
+            assert!(
+                validate_document(&format!("<p style=\"{style}\">x</p>")).is_err(),
+                "{style}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_safe_padding_and_rejects_active_values() {
+        let source = "<p style=\"padding: 0.5em 1rem; padding-left: 4px\">စာသား</p>";
+        let (html, _) = validate_document(source).expect("safe text padding");
+        assert!(html.contains("padding: 0.5em 1rem"));
+        for style in [
+            "padding: url(https://example.com)",
+            "padding: -10px",
+            "padding: auto",
+            "padding: calc(100% - 1px)",
+            "padding: 1em; position: fixed",
+        ] {
+            assert!(
+                validate_document(&format!("<p style=\"{style}\">x</p>")).is_err(),
+                "{style}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_safe_inline_borders_and_rejects_active_values() {
+        let source =
+            "<p style=\"border: 1px solid #333; border-bottom: 0.5em dotted black\">text</p>";
+        let (html, _) = validate_document(source).expect("safe border styles");
+        assert!(html.contains("border: 1px solid #333"));
+        for style in [
+            "border: url(https://example.com)",
+            "border: 1px solid; position: fixed",
+            "border: expression(alert(1))",
+            "border: -2px solid red",
+        ] {
+            assert!(
+                validate_document(&format!("<p style=\"{style}\">x</p>")).is_err(),
+                "{style}"
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_safe_inline_dimensions_and_rejects_expressions() {
+        let source = "<p style=\"height: 12em; width: 100%; max-height: 480px\">text</p>";
+        let (html, _) = validate_document(source).expect("safe dimensions");
+        assert!(html.contains("height: 12em"));
+        for style in [
+            "height: url(https://example.com)",
+            "height: -10px",
+            "height: calc(100% - 1px)",
+            "position: fixed; height: 100vh",
+        ] {
+            assert!(
+                validate_document(&format!("<p style=\"{style}\">x</p>")).is_err(),
+                "{style}"
+            );
         }
     }
 }
@@ -1072,6 +1560,19 @@ mod original_cover_tests {
         assert!(html.contains("<figcaption>"), "{html}");
     }
     #[test]
+    fn removes_only_empty_breaks_inserted_inside_svg() {
+        let (html, _) = validate_document(
+            "<div><svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 10 10\"><path d=\"M0 0\"/><br/><circle r=\"2\"/></svg></div>",
+        )
+        .expect("ignore an invalid SVG break");
+        assert!(html.contains("<path d=\"M0 0\"/>"), "{html}");
+        assert!(html.contains("<circle r=\"2\"/>"), "{html}");
+        assert!(!html.contains("<br"), "{html}");
+        // Ordinary XHTML breaks remain valid and preserved.
+        let (html, _) = validate_document("<p>one<br/>two</p>").expect("XHTML break");
+        assert!(html.contains("<br/>"), "{html}");
+    }
+    #[test]
     fn still_rejects_external_and_active_svg_content() {
         for html in [
             "<div><svg xmlns=\"http://www.w3.org/2000/svg\"><image href=\"https://example.com/a.png\"/></svg></div>",
@@ -1098,6 +1599,19 @@ mod table_tests {
             validate_document("<table><tbody><tr><td><p></p></td></tr></tbody></table>")
                 .expect("empty grid");
         assert!(!text.trim().is_empty());
+    }
+    #[test]
+    fn preserves_safe_table_column_groups_and_rejects_invalid_positions() {
+        let html = "<table><colgroup span=\"2\"><col width=\"50%\"/><col style=\"width:25%\"/></colgroup><tbody><tr><td>A</td><td>B</td></tr></tbody></table>";
+        let (saved, _) = validate_document(html).expect("column group");
+        assert_eq!(saved, html);
+        for invalid in [
+            "<table><col/></table>",
+            "<table><colgroup><tr><td>x</td></tr></colgroup></table>",
+            "<table><colgroup span=\"101\"><col/></colgroup><tbody><tr><td>x</td></tr></tbody></table>",
+        ] {
+            assert!(validate_document(invalid).is_err(), "{invalid}");
+        }
     }
     #[test]
     fn rejects_invalid_table_structure_and_spans() {

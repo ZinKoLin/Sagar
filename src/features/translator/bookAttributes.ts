@@ -31,28 +31,65 @@ export const BookAttributes = Extension.create({
           "code",
           "codeBlock",
         ],
-        attributes: Object.fromEntries(
-          [
-            "class",
-            "id",
-            "style",
-            "title",
-            "lang",
-            "dir",
-            "role",
-            "epub:type",
-            "xmlns:epub",
-            "xml:lang",
-          ].map((name) => [
-            name,
-            {
-              default: null,
-              parseHTML: (element: HTMLElement) => element.getAttribute(name),
-              renderHTML: (attributes: Record<string, unknown>) =>
-                typeof attributes[name] === "string" ? { [name]: attributes[name] } : {},
+        attributes: {
+          bookAria: {
+            default: null,
+            parseHTML: (element: HTMLElement) =>
+              Object.fromEntries(
+                Array.from(element.attributes)
+                  .filter((attr) => attr.name.startsWith("aria-"))
+                  .map((attr) => [attr.name, attr.value]),
+              ),
+            renderHTML: (attributes: Record<string, unknown>) => {
+              const value = attributes.bookAria;
+              return value && typeof value === "object"
+                ? Object.fromEntries(
+                    Object.entries(value).filter(
+                      ([name, text]) =>
+                        name.startsWith("aria-") && typeof text === "string",
+                    ),
+                  )
+                : {};
             },
-          ]),
-        ),
+          },
+          ...Object.fromEntries(
+            [
+              "class",
+              "id",
+              "style",
+              "title",
+              "lang",
+              "dir",
+              "role",
+              "epub:type",
+              "xmlns:epub",
+              "xml:lang",
+            ].map((name) => [
+              name,
+              {
+                default: null,
+                parseHTML: (element: HTMLElement) => element.getAttribute(name),
+                renderHTML: (attributes: Record<string, unknown>) =>
+                  typeof attributes[name] === "string"
+                    ? { [name]: attributes[name] }
+                    : {},
+              },
+            ]),
+          ),
+        },
+      },
+      {
+        types: ["listItem"],
+        attributes: {
+          value: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("value"),
+            renderHTML: (attributes: Record<string, unknown>) =>
+              typeof attributes.value === "string"
+                ? { value: attributes.value }
+                : {},
+          },
+        },
       },
       {
         types: ["image", "book_inline_image"],

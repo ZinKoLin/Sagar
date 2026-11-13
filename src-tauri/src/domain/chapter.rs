@@ -91,6 +91,16 @@ pub struct ExportOutcome {
     pub warnings: Vec<crate::domain::ImportWarning>,
 }
 
+/// A cached bilingual word or phrase correspondence supplied for EPUB export.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilingualAlignment {
+    pub source_text: String,
+    pub target_text: String,
+    pub meaning: String,
+    pub grammar_note: String,
+}
+
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterImage {

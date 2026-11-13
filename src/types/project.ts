@@ -14,6 +14,7 @@ export type ProjectSummary = {
 };
 
 export type ChapterSummary = {
+  navigationGroups?: { id: string; title: string; resource: string | null }[];
   id: string;
   spineIndex: number;
   title: string;

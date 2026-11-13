@@ -24,7 +24,9 @@ export function ChapterPicker({
     `${chapter.spineIndex + 1}. ${chapter.title}`;
   const selected = chapters.find((chapter) => chapter.id === chapterId);
   const filtered = chapters.filter((chapter) =>
-    label(chapter).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()),
+    `${label(chapter)} ${(chapter.navigationGroups ?? []).map((group) => group.title).join(" ")}`
+      .toLocaleLowerCase()
+      .includes(query.trim().toLocaleLowerCase()),
   );
   const activeId = filtered.some((chapter) => chapter.id === highlight)
     ? highlight
@@ -144,12 +146,28 @@ export function ChapterPicker({
                 id={`${listId}-${chapter.id}`}
                 key={chapter.id}
                 aria-selected={chapter.id === chapterId}
+                aria-label={`${(chapter.navigationGroups ?? []).map((group) => group.title).join(" / ")} ${label(chapter)}`.trim()}
+                style={{
+                  paddingInlineStart: `${12 + Math.min(chapter.navigationGroups?.length ?? 0, 4) * 16}px`,
+                }}
                 className={`chapter-picker__option${chapter.id === activeId ? " chapter-picker__option--active" : ""}`}
                 onMouseDown={(event) => event.preventDefault()}
                 onMouseMove={() => setHighlight(chapter.id)}
                 onClick={() => choose(chapter.id)}
               >
-                <span>{label(chapter)}</span>
+                <span className="chapter-picker__option-label">
+                  <Icon name="book" size={16} />
+                  <span>
+                    <span>{label(chapter)}</span>
+                    {(chapter.navigationGroups?.length ?? 0) > 0 && (
+                      <small className="chapter-picker__context">
+                        {chapter.navigationGroups
+                          ?.map((group) => group.title)
+                          .join(" / ")}
+                      </small>
+                    )}
+                  </span>
+                </span>
                 {chapter.id === chapterId ? <Icon name="check" size={16} /> : null}
               </button>
             ))}

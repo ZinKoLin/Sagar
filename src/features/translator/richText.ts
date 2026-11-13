@@ -104,7 +104,7 @@ const SVG_ATTRS = [
   "version",
 ];
 
-/** Remove empty formatting wrappers without losing meaningful adjacent spaces. */
+/** Unwrap whitespace-only formatting while retaining intentional empty nodes. */
 export function normalizeFormattingWhitespace(root: ParentNode): void {
   const elements = Array.from(
     root.querySelectorAll("b, strong, i, em, u, s, span"),
@@ -114,7 +114,6 @@ export function normalizeFormattingWhitespace(root: ParentNode): void {
     const text = element.textContent ?? "";
     if (!/^\s*$/.test(text)) continue;
     if (text.length > 0) element.replaceWith(element.ownerDocument.createTextNode(text));
-    else element.remove();
   }
 }
 
@@ -171,6 +170,8 @@ export function documentFragment(html: string): string {
       "figcaption",
       "p",
       "table",
+      "colgroup",
+      "col",
       "thead",
       "tbody",
       "tfoot",
@@ -202,6 +203,14 @@ export function documentFragment(html: string): string {
       "dt",
       "dd",
       "span",
+      "small",
+      "abbr",
+      "cite",
+      "dfn",
+      "kbd",
+      "samp",
+      "var",
+      "mark",
       "b",
       "i",
       "code",
@@ -255,13 +264,20 @@ export function documentFragment(html: string): string {
                 ]
               : tag === "table"
                 ? ["border", "cellpadding", "cellspacing", "width", "align"]
-                : tag === "ol" || tag === "ul"
-                  ? ["start", "type"]
-                  : tag === "li"
-                    ? ["value"]
-                    : []),
+                : tag === "colgroup" || tag === "col"
+                  ? ["span", "width"]
+                  : tag === "ol" || tag === "ul"
+                    ? ["start", "type"]
+                    : tag === "li"
+                      ? ["value"]
+                      : []),
       ...(SVG_TAGS.includes(tag) ? [...SVG_ATTRS, "xmlns", "xmlns:xlink"] : []),
     ].sort();
+    names.push(
+      ...Array.from(node.attributes, (attr) => attr.name).filter((name) =>
+        name.startsWith("aria-"),
+      ),
+    );
     const attributes = names
       .filter((name) => node.hasAttribute(name))
       .map((name) => ` ${name}="${plainFragment(node.getAttribute(name) ?? "")}"`)
@@ -272,6 +288,7 @@ export function documentFragment(html: string): string {
         "img",
         "hr",
         "source",
+        "col",
         "image",
         "path",
         "rect",
@@ -288,6 +305,98 @@ export function documentFragment(html: string): string {
   return Array.from(doc.body.childNodes).map(serialize).join("");
 }
 
+/** Prepare validated XHTML for Rich editing without changing readable content.
+ * Run on conversion only: never during typing or IME composition. */
+export function normalizeRichDocument(html: string): string {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  // XHTML permits self-closing containers; the HTML parser would treat
+  // <header/> as an opening tag and swallow the following chapter into it.
+  const xml = parser.parseFromString(
+    `<w xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xmlns:xlink="http://www.w3.org/1999/xlink">${html}</w>`,
+    "application/xhtml+xml",
+  );
+  if (!xml.querySelector("parsererror")) {
+    doc.body.replaceChildren(
+      ...Array.from(xml.documentElement.childNodes, (node) => doc.importNode(node, true)),
+    );
+  }
+  const emptyDecorations =
+    "em,strong,u,s,code,b,i,span,h1,h2,h3,h4,h5,h6,div,header,footer";
+  for (const element of Array.from(
+    doc.body.querySelectorAll(emptyDecorations),
+  ).reverse()) {
+    // Class names alone do not give an empty decoration content. IDs, language,
+    // role, EPUB semantics, styles, labels and all other attributes protect it.
+    if (
+      element.children.length === 0 &&
+      /^[\t\r\n ]*$/.test(element.textContent ?? "") &&
+      Array.from(element.attributes).every((attr) => attr.name === "class") &&
+      !element.closest("pre,svg,picture,table")
+    )
+      element.remove();
+  }
+  const blocks =
+    "p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,br,hr,table,colgroup,thead,tbody,tfoot,tr,td,th,caption,div,section,article,main,header,footer,aside,figure,figcaption,pre,dl,dt,dd,svg,picture,a";
+  for (const parent of Array.from(
+    doc.querySelectorAll(
+      "body,ul,ol,table,colgroup,thead,tbody,tfoot,tr,div,section,article,main,header,footer,aside,figure,figcaption,dd,li,blockquote,td,th",
+    ),
+  )) {
+    if (Array.from(parent.children).some((child) => child.matches(blocks))) {
+      for (const child of Array.from(parent.childNodes)) {
+        const besideInline = [child.previousSibling, child.nextSibling].some(
+          (sibling) => sibling instanceof Element && !sibling.matches(blocks),
+        );
+        if (
+          child.nodeType === Node.TEXT_NODE &&
+          !besideInline &&
+          /^[\t\r\n ]*$/.test(child.textContent ?? "")
+        )
+          child.remove();
+      }
+    }
+  }
+  for (const parent of Array.from(
+    doc.querySelectorAll(
+      "body,div,section,article,main,header,footer,aside,figure,figcaption,dd,li,blockquote,td,th",
+    ),
+  )) {
+    if (
+      parent.closest("svg,picture") ||
+      parent.closest("table")?.querySelector("thead,tfoot,caption")
+    )
+      continue;
+    const needsBlocks =
+      parent.matches("body,li,blockquote,td,th") ||
+      Array.from(parent.children).some((child) => child.matches(blocks));
+    if (!needsBlocks) continue;
+    let run: ChildNode[] = [];
+    const wrap = () => {
+      if (
+        run.some(
+          (node) =>
+            node.nodeType === Node.ELEMENT_NODE ||
+            !/^[\t\r\n ]*$/.test(node.textContent ?? ""),
+        )
+      ) {
+        const paragraph = doc.createElement("p");
+        run[0].before(paragraph);
+        paragraph.append(...run);
+      } else {
+        for (const node of run) node.remove();
+      }
+      run = [];
+    };
+    for (const child of Array.from(parent.childNodes)) {
+      if (child instanceof Element && child.matches(blocks)) wrap();
+      else run.push(child);
+    }
+    wrap();
+  }
+  return documentFragment(doc.body.innerHTML);
+}
+
 /** Compare structural content without code indentation between block elements. */
 function prepareComparableDocument(html: string): Document {
   const document = new DOMParser().parseFromString(html, "text/html");
@@ -302,6 +411,23 @@ function prepareComparableDocument(html: string): Document {
       element.parentElement.attributes.length === 0
     )
       element.replaceWith(...Array.from(element.childNodes));
+  }
+  // ProseMirror requires inline nodes at the document root to live in a block
+  // and may serialize a standalone EPUB anchor as <p><a>…</a></p>. Treat only
+  // that exact, attribute-free wrapper as equivalent; the anchor and all its
+  // attributes/content must still match, so this cannot hide a dropped link.
+  for (const paragraph of Array.from(document.body.querySelectorAll("p"))) {
+    const meaningful = Array.from(paragraph.childNodes).filter(
+      (node) =>
+        node.nodeType !== Node.TEXT_NODE || (node.textContent ?? "").trim() !== "",
+    );
+    if (
+      paragraph.attributes.length === 0 &&
+      meaningful.length === 1 &&
+      meaningful[0] instanceof Element &&
+      meaningful[0].matches("a")
+    )
+      paragraph.replaceWith(meaningful[0]);
   }
   for (const element of document.querySelectorAll("[style]")) {
     if (element instanceof HTMLElement)
@@ -571,4 +697,33 @@ export function sameRichDocument(leftHtml: string, rightHtml: string): boolean {
 /** Canonical form used by editor tests and by callers comparing one document. */
 export function comparableDocument(html: string): string {
   return documentFragment(prepareComparableDocument(html).body.innerHTML);
+}
+
+/** Describe the first structural mismatch without exposing chapter text. */
+export function describeRichTextMismatch(source: string, converted: string): string {
+  const left = comparableDocument(source);
+  const right = comparableDocument(converted);
+  let offset = 0;
+  while (offset < left.length && offset < right.length && left[offset] === right[offset])
+    offset += 1;
+  const tagAt = (html: string) => {
+    const opening = html.lastIndexOf("<", offset);
+    const closing = html.indexOf(">", opening);
+    if (opening < 0 || closing < 0) return "document";
+    const match = /^<\/?([a-z][a-z0-9:-]*)/i.exec(html.slice(opening, closing + 1));
+    return match?.[1]?.toLowerCase() ?? "document";
+  };
+  const expected = tagAt(left);
+  const actual = tagAt(right);
+  return expected === actual
+    ? `<${expected}> အတွင်းရှိ attribute သို့မဟုတ် စာရင်းပုံစံ မတူညီနေသည်။`
+    : `သိမ်းထားသော HTML တွင် <${expected}> ဖြစ်ပြီး Rich စာသားတွင် <${actual}> ဖြစ်နေသည်။`;
+}
+
+/** Give table-validation failures a repair hint without exposing book text. */
+export function localizeRichValidationError(message: string): string {
+  if (!/table|column group|row group/i.test(message)) return message;
+  const found = /Found <([a-z][a-z0-9:-]*)> inside <([a-z][a-z0-9:-]*)>\./i.exec(message);
+  const detail = found ? ` <${found[1]}> ကို <${found[2]}> အတွင်း တွေ့ရှိပါတယ်။` : "";
+  return `ဇယားဖွဲ့စည်းပုံ မကိုက်ညီပါ။${detail} HTML မြင်ကွင်းမှာ ဇယားတစ်ခုစီတွင် အတန်း (<tr>)၊ အတန်းတစ်ခုစီတွင် အချက်အလက်ဆဲလ် (<td>) သို့မဟုတ် ခေါင်းစဉ်ဆဲလ် (<th>) ပါရှိကြောင်း စစ်ဆေးပြီး Rich စာသားမြင်ကွင်းကို ပြန်ဖွင့်ပါ။ သိမ်းထားတဲ့ HTML ကို မဖျက်ထားပါ။`;
 }

@@ -136,6 +136,7 @@ pub fn validate_output(path: &Path) -> Result<Vec<ImportWarning>, AppError> {
             documents.insert(item.href.clone(), text);
         }
     }
+    let mut warnings = Vec::new();
     for (path, text) in &documents {
         let doc = crate::epub::xml::parse(text)
             .map_err(|_| AppError::new("export_invalid", "Invalid exported document."))?;
@@ -156,9 +157,23 @@ pub fn validate_output(path: &Path) -> Result<Vec<ImportWarning>, AppError> {
                     crate::epub::resolve_href(path, href)
                 };
                 if !archive.contains(&resource) {
+                    if node.tag_name().name() == "script" && attribute.name() == "src" {
+                        warnings.push(ImportWarning {
+                            code: "missing_optional_script".into(),
+                            message: format!(
+                                "An optional script reference \"{}\" in \"{}\" points to missing resource \"{}\". The book can still be exported; script-based enhancements may be unavailable.",
+                                href, path, resource
+                            ),
+                            location: Some(path.clone()),
+                        });
+                        continue;
+                    }
                     return Err(AppError::new(
                         "export_broken_reference",
-                        "A link or image points to a missing resource. Include original chapters or update the translation links before exporting.",
+                        format!(
+                            "The reference \"{}\" in \"{}\" points to missing resource \"{}\". Include original chapters or update this link or image before exporting.",
+                            href, path, resource
+                        ),
                     ));
                 }
                 if let Some((_, fragment)) = href.split_once('#') {
@@ -182,7 +197,6 @@ pub fn validate_output(path: &Path) -> Result<Vec<ImportWarning>, AppError> {
             }
         }
     }
-    let warnings = Vec::new();
     Ok(warnings)
 }
 
@@ -259,6 +273,195 @@ fn patched_chapter(
     }
 }
 
+fn bilingualize_chapter(
+    source: &[u8],
+    translated: &[u8],
+    source_language: &str,
+    target_language: &str,
+    alignments: &[crate::domain::BilingualAlignment],
+) -> Result<Vec<u8>, AppError> {
+    const BLOCKS: &[&str] = &[
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "dt",
+        "dd",
+        "figcaption",
+        "td",
+        "th",
+        "caption",
+    ];
+    let invalid = || {
+        AppError::new(
+            "export_failed",
+            "The bilingual chapter could not be paired safely.",
+        )
+    };
+    let source_text = std::str::from_utf8(source).map_err(|_| invalid())?;
+    let translated_text = std::str::from_utf8(translated).map_err(|_| invalid())?;
+    let source_doc = crate::epub::xml::parse(source_text).map_err(|_| invalid())?;
+    let translated_doc = crate::epub::xml::parse(translated_text).map_err(|_| invalid())?;
+    fn collect<'a, 'input>(
+        doc: &'a roxmltree::Document<'input>,
+    ) -> Vec<roxmltree::Node<'a, 'input>> {
+        doc.descendants()
+            .filter(|node| {
+                node.is_element()
+                    && BLOCKS.contains(&node.tag_name().name())
+                    && !node.descendants().skip(1).any(|child| {
+                        child.is_element() && BLOCKS.contains(&child.tag_name().name())
+                    })
+            })
+            .collect::<Vec<_>>()
+    }
+    let original_blocks = collect(&source_doc);
+    let translated_blocks = collect(&translated_doc);
+    if original_blocks.len() != translated_blocks.len()
+        || original_blocks
+            .iter()
+            .zip(&translated_blocks)
+            .any(|(a, b)| a.tag_name().name() != b.tag_name().name())
+    {
+        return Err(invalid());
+    }
+    let inner_range = |text: &str,
+                       node: roxmltree::Node<'_, '_>|
+     -> Result<std::ops::Range<usize>, AppError> {
+        let range = node.range();
+        let mut reader = quick_xml::Reader::from_str(&text[range.clone()]);
+        let start = match reader.read_event().map_err(|_| invalid())? {
+            quick_xml::events::Event::Start(_) => range.start + reader.buffer_position() as usize,
+            quick_xml::events::Event::Empty(_) => return Ok(range.end..range.end),
+            _ => return Err(invalid()),
+        };
+        let end = range.start + text[range.clone()].rfind('<').ok_or_else(invalid)?;
+        if start > end {
+            return Err(invalid());
+        }
+        Ok(start..end)
+    };
+    let mut edits = Vec::new();
+    for (original, target) in original_blocks.iter().zip(&translated_blocks) {
+        let original_inner = inner_range(source_text, *original)?;
+        let target_inner = inner_range(translated_text, *target)?;
+        let original_html =
+            colorize_alignment_spans(&source_text[original_inner], alignments, true);
+        let target_html =
+            colorize_alignment_spans(&translated_text[target_inner], alignments, false);
+        let replacement = format!(
+            "<span lang=\"{}\" class=\"sagar-bilingual-original\">{}</span><br/><span lang=\"{}\" class=\"sagar-bilingual-translation\">{}</span>",
+            escape_xml_attr(source_language),
+            original_html,
+            escape_xml_attr(target_language),
+            target_html
+        );
+        let range = inner_range(source_text, *original)?;
+        edits.push((range, replacement));
+    }
+    let mut output = source_text.to_owned();
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    for (range, replacement) in edits {
+        output.replace_range(range, &replacement);
+    }
+    Ok(output.into_bytes())
+}
+
+fn colorize_alignment_spans(
+    fragment: &str,
+    alignments: &[crate::domain::BilingualAlignment],
+    source_side: bool,
+) -> String {
+    const COLORS: [&str; 6] = [
+        "#f2c94c", "#56ccf2", "#6fcf97", "#bb6bd9", "#f2994a", "#eb5757",
+    ];
+    let prefix = "<sagar-root xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\" xmlns:svg=\"http://www.w3.org/2000/svg\" xmlns:xlink=\"http://www.w3.org/1999/xlink\">";
+    let wrapped = format!("{prefix}{fragment}</sagar-root>");
+    let Ok(doc) = crate::epub::xml::parse(&wrapped) else {
+        return fragment.to_string();
+    };
+    let wrapper_prefix = prefix.len();
+    let text_ranges = doc
+        .descendants()
+        .filter(|node| node.is_text())
+        .map(|node| {
+            let range = node.range();
+            (range.start - wrapper_prefix)..(range.end - wrapper_prefix)
+        })
+        .collect::<Vec<_>>();
+    let mut edits = Vec::new();
+    for (color_index, alignment) in alignments.iter().enumerate().take(3000) {
+        let phrase = if source_side {
+            &alignment.source_text
+        } else {
+            &alignment.target_text
+        };
+        if phrase.trim().is_empty() || phrase.chars().count() > 120 {
+            continue;
+        }
+        let escaped_phrase = escape_xml_text(phrase);
+        let title = format!(
+            "{} = {} — {}; {}",
+            alignment.source_text, alignment.target_text, alignment.meaning, alignment.grammar_note
+        );
+        let style = format!(
+            "background-color:{};color:inherit;border-radius:.15em;padding:0 .08em",
+            COLORS[color_index % COLORS.len()]
+        );
+        let open = format!(
+            "<span style=\"{}\" title=\"{}\">",
+            escape_xml_attr(&style),
+            escape_xml_attr(&title)
+        );
+        for range in &text_ranges {
+            let Some(raw_text) = fragment.get(range.clone()) else {
+                continue;
+            };
+            let mut offset = 0;
+            while let Some(relative) = raw_text[offset..].find(&escaped_phrase) {
+                let start = range.start + offset + relative;
+                let end = start + escaped_phrase.len();
+                let replacement = format!("{open}{escaped_phrase}</span>");
+                edits.push((start..end, replacement));
+                offset += relative + escaped_phrase.len();
+                if offset >= raw_text.len() {
+                    break;
+                }
+            }
+        }
+    }
+    let mut output = fragment.to_string();
+    edits.sort_by_key(|(range, _)| std::cmp::Reverse(range.start));
+    let mut last_start = usize::MAX;
+    for (range, replacement) in edits {
+        if range.end > last_start {
+            continue;
+        }
+        output.replace_range(range.clone(), &replacement);
+        last_start = range.start;
+    }
+    output
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+fn escape_xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
 /// Export use case: everything except destination finalization.
 /// Loads per-block export rows for a chapter id.
 pub type BlocksLoader = Box<dyn Fn(&str) -> Result<Vec<BlockForExport>, AppError> + Send>;
@@ -270,6 +473,11 @@ pub struct ExportInput {
     pub metadata: Vec<(String, String)>,
     pub custom_cover: Option<String>,
     pub target_language: String,
+    pub source_language: Option<String>,
+    pub bilingual: bool,
+    /// Per-chapter cached word and phrase alignments for bilingual styling.
+    pub bilingual_alignments:
+        std::collections::HashMap<String, Vec<crate::domain::BilingualAlignment>>,
     /// (chapter_id, resource_href) in spine order with per-block patches.
     pub chapters: Vec<(String, String)>,
     /// Load blocks per chapter from storage.
@@ -357,7 +565,21 @@ pub fn run_export(input: ExportInput) -> Result<ExportOutcome, AppError> {
             .filter(|block| block.target_fragment.is_some())
             .count();
         blocks_translated += translated_count;
-        let (bytes, chapter_warnings) = patched_chapter(&mut snapshot, resource_href, &blocks)?;
+        let (mut bytes, chapter_warnings) = patched_chapter(&mut snapshot, resource_href, &blocks)?;
+        if input.bilingual && has_translation && chapter_warnings.is_empty() {
+            let source = snapshot.read_entry(resource_href)?;
+            bytes = bilingualize_chapter(
+                &source,
+                &bytes,
+                input.source_language.as_deref().unwrap_or("en"),
+                &input.target_language,
+                input
+                    .bilingual_alignments
+                    .get(chapter_id)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+            )?;
+        }
         warnings.extend(chapter_warnings);
         patched.insert(resource_href.clone(), bytes);
     }
@@ -1009,5 +1231,57 @@ mod chapter_document_tests {
 
         let empty = r#"<html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body id="chapter"/></html>"#;
         assert_eq!(chapter_body_inner(empty.as_bytes()).expect("empty"), "");
+    }
+
+    #[test]
+    fn bilingual_export_pairs_source_and_translation_inside_original_blocks() {
+        let source = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="title">Chapter</h1><p id="p1">Read <i>this</i></p><p id="p2">Next</p></body></html>"#;
+        let translated = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><h1 id="title">အခန်း</h1><p id="p1">ဖတ်ပါ <i>ဤစာ</i></p><p id="p2">နောက်တစ်ခု</p></body></html>"#;
+        let output =
+            bilingualize_chapter(source.as_bytes(), translated.as_bytes(), "en", "my", &[])
+                .expect("bilingualize");
+        let output = std::str::from_utf8(&output).expect("utf8");
+        assert!(output.contains("lang=\"en\" class=\"sagar-bilingual-original\">Read <i>this</i>"));
+        assert!(
+            output.contains("lang=\"my\" class=\"sagar-bilingual-translation\">ဖတ်ပါ <i>ဤစာ</i>")
+        );
+        assert!(output.contains("id=\"p1\""));
+        assert_eq!(output.matches("id=\"p1\"").count(), 1);
+        crate::epub::xml::parse(output).expect("valid bilingual xhtml");
+    }
+
+    #[test]
+    fn bilingual_export_colors_matching_words_and_includes_meaning_tooltips() {
+        let source = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>I am Kyaw Kyaw.</p></body></html>"#;
+        let translated = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>ကျွန်တော်က ကျော်ကျော်ပါ။</p></body></html>"#;
+        let alignments = vec![crate::domain::BilingualAlignment {
+            source_text: "I".into(),
+            target_text: "ကျွန်တော်".into(),
+            meaning: "မိမိကိုယ်ကို ရည်ညွှန်းသောစကား".into(),
+            grammar_note: "ပထမပုဂ္ဂိုလ် နာမ်စား".into(),
+        }];
+        let output = bilingualize_chapter(
+            source.as_bytes(),
+            translated.as_bytes(),
+            "en",
+            "my",
+            &alignments,
+        )
+        .expect("colored bilingual chapter");
+        let output = std::str::from_utf8(&output).expect("utf8");
+        assert_eq!(output.matches("background-color:#f2c94c").count(), 2);
+        assert!(output.contains("title=\"I = ကျွန်တော် — မိမိကိုယ်ကို ရည်ညွှန်းသောစကား; ပထမပုဂ္ဂိုလ် နာမ်စား\""));
+        crate::epub::xml::parse(output).expect("valid colored bilingual xhtml");
+    }
+
+    #[test]
+    fn bilingual_export_rejects_unmatched_block_structure() {
+        let source = r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>Source</p><p>Second</p></body></html>"#;
+        let translated =
+            r#"<html xmlns="http://www.w3.org/1999/xhtml"><body><p>တစ်ခု</p></body></html>"#;
+        assert!(
+            bilingualize_chapter(source.as_bytes(), translated.as_bytes(), "en", "my", &[])
+                .is_err()
+        );
     }
 }

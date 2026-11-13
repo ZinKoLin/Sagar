@@ -201,6 +201,7 @@ pub fn list_chapters(conn: &Connection, project_id: &str) -> Result<Vec<ChapterS
     )?;
     let rows = stmt.query_map(rusqlite::params![project_id], |row| {
         Ok(ChapterSummary {
+            navigation_groups: Vec::new(),
             id: row.get(0)?,
             spine_index: row.get(1)?,
             title: row.get(2)?,

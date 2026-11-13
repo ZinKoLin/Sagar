@@ -1,6 +1,6 @@
 [package]
 name = "sagar"
-version = "0.1.8"
+version = "0.2.5"
 description = "EPUB Translation Studio — offline manual EPUB translation"
 authors = ["you"]
 edition = "2024"
@@ -31,10 +31,10 @@ uuid = { version = "1.28.0", features = ["v4"] }
 chrono = "0.4.45"
 base64 = "0.23.1"
 quick-xml = "0.42.0"
-# User-triggered provider connection tests only (GET {base}/models, no book
-# content). Version pinned to the reqwest already in the lockfile; HTTP/2 is
-# left out so no new native dependencies enter the build.
+# Provider discovery and explicitly consented streaming translation requests.
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "rustls", "charset"] }
+
+tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -16,8 +16,39 @@ import {
   normalizeFormattingWhitespace,
   normalizeRichHtmlForEditor,
   sameRichDocument,
+  describeRichTextMismatch,
+  localizeRichValidationError,
+  normalizeRichDocument,
 } from "./richText";
 import type { useChapterEditor } from "./useChapterEditor";
+
+/** Local validation normally resolves in milliseconds. Bound it so a hung
+ * backend call can never leave both view buttons disabled with no feedback. */
+const VALIDATE_TIMEOUT_MS = 20_000;
+
+function validateChapterHtmlTimed(html: string): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            "Validation took too long (over 20 seconds) and was stopped. Your code is kept; try the Rich view again.",
+          ),
+        ),
+      VALIDATE_TIMEOUT_MS,
+    );
+    validateChapterHtml(html).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 export function TargetPane({
   projectId,
@@ -27,6 +58,7 @@ export function TargetPane({
   onRetry,
   onReloadAfterConflict,
   editor,
+  onOpenTranslation,
 }: {
   projectId: string;
   content: ChapterContent | null;
@@ -35,8 +67,21 @@ export function TargetPane({
   onRetry: () => void;
   onReloadAfterConflict: () => void;
   editor: ReturnType<typeof useChapterEditor>;
+  onOpenTranslation?: () => void;
 }) {
-  const [activeEditor, setActiveEditor] = useState<TiptapEditor | null>(null);
+  // Scope readiness to the chapter instead of clearing it in a parent effect:
+  // child mount effects can report readiness before that effect runs.
+  const [readyEditor, setReadyEditor] = useState<{
+    chapterId: string | undefined;
+    editor: TiptapEditor;
+  } | null>(null);
+  const chapterId = content?.chapterId;
+  const activeEditor =
+    readyEditor && readyEditor.chapterId === chapterId ? readyEditor.editor : null;
+  const handleEditorReady = useCallback(
+    (editor: TiptapEditor) => setReadyEditor({ chapterId, editor }),
+    [chapterId],
+  );
   const [, refreshToolbar] = useState(0);
   const [imageError, setImageError] = useState<string | null>(null);
   const [imagePicker, setImagePicker] = useState(false);
@@ -65,7 +110,6 @@ export function TargetPane({
   }, [activeEditor]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset toolbar when navigating to another chapter.
   useEffect(() => {
-    setActiveEditor(null);
     setImagePicker(false);
     setImageError(null);
     setView("rich");
@@ -80,13 +124,19 @@ export function TargetPane({
     !activeEditor.isDestroyed &&
     activeEditor.isEditable;
   const showRichText = useCallback(async () => {
-    if (!activeEditor || activeEditor.isDestroyed) return;
+    if (!activeEditor || activeEditor.isDestroyed) {
+      // The chapter editor is still mounting (or was destroyed on chapter
+      // switch). Surface feedback instead of silently ignoring the click,
+      // which previously looked like the Rich button was dead.
+      setViewError("The rich editor is still loading. Try again in a moment.");
+      return;
+    }
     const html = currentHtml.current;
     const destination = activeEditor;
     setSwitching(true);
     setViewError(null);
     try {
-      const validated = await validateChapterHtml(html);
+      const validated = normalizeRichDocument(await validateChapterHtmlTimed(html));
       if (currentHtml.current !== html || destination.isDestroyed) return;
       const wrapper = document.createElement("div");
       wrapper.innerHTML = normalizeRichHtmlForEditor(validated);
@@ -102,24 +152,27 @@ export function TargetPane({
       if (validated.trim() !== "" && !sameRichDocument(validated, roundTrip.innerHTML)) {
         setView("html");
         setViewError(
-          "This HTML cannot be represented faithfully in rich text. Your code is kept; continue editing it here or adjust its structure.",
+          `ဒီ HTML ကို Rich စာသားပုံစံသို့ ပြောင်းရာတွင် အစိတ်အပိုင်းတစ်ခု မတူညီသွားသည်။ ${describeRichTextMismatch(validated, roundTrip.innerHTML)} ဘာသာပြန်ထားသော HTML ကို သိမ်းထားပြီးဖြစ်သည်။ HTML မြင်ကွင်းတွင် ဆက်ပြင်နိုင်သည်၊ ဘာသာပြန်ရန် အစမှပြန်စရာမလိုပါ။`,
         );
         return;
       }
-      destination.commands.setContent(parsed, { emitUpdate: false });
+      // Apply the exact document that passed the preservation check, rather
+      // than parsing the HTML a second time with different whitespace options.
+      destination.commands.setContent(parsed.toJSON(), { emitUpdate: false });
+      if (validated !== html) editor.setHtml(validated);
       setView("rich");
     } catch (error) {
       if (currentHtml.current !== html || destination.isDestroyed) return;
       setView("html");
       setViewError(
         error instanceof Error
-          ? error.message
+          ? localizeRichValidationError(error.message)
           : "Check your HTML before switching to rich text.",
       );
     } finally {
       setSwitching(false);
     }
-  }, [activeEditor]);
+  }, [activeEditor, editor.setHtml]);
   useEffect(() => {
     if (view !== "rich" || !activeEditor || activeEditor.isDestroyed) return;
     const displayed = activeEditor.getHTML();
@@ -160,9 +213,11 @@ export function TargetPane({
             type="button"
             className="icon-button"
             aria-label="Rich text view"
-            title="Rich text view"
+            title={!activeEditor ? "Rich text view (editor loading)" : "Rich text view"}
             aria-pressed={view === "rich"}
-            disabled={switching || !editor.draft || editor.draft.conflict}
+            disabled={
+              switching || !editor.draft || editor.draft.conflict || !activeEditor
+            }
             onClick={() => void showRichText()}
           >
             <Icon name="richText" />
@@ -185,7 +240,7 @@ export function TargetPane({
           disabled={!editor.draft || editor.draft.conflict}
           aria-label="Generate an AI translation proposal"
           title="Generate an AI translation proposal"
-          onClick={() => setAiOpen(true)}
+          onClick={() => (onOpenTranslation ? onOpenTranslation() : setAiOpen(true))}
         >
           <Icon name="sparkles" />
         </button>
@@ -592,7 +647,7 @@ export function TargetPane({
                 html={richEditorHtml}
                 disabled={editor.draft?.conflict ?? false}
                 onChange={editor.setHtml}
-                onReady={setActiveEditor}
+                onReady={handleEditorReady}
                 onImage={() => setImagePicker(true)}
                 active={view === "rich"}
               />

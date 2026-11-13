@@ -21,6 +21,7 @@ pub struct ProjectSummary {
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterSummary {
+    pub navigation_groups: Vec<crate::epub::nav::NavGroup>,
     pub id: String,
     pub spine_index: i64,
     pub title: String,

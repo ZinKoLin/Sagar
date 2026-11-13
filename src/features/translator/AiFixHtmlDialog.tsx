@@ -15,6 +15,7 @@ import type {
   TranslationSelection,
 } from "../../types/ai";
 import { agentLabel } from "../settings/TranslationModelSection";
+import { ApiRequestDetails } from "./ApiRequestDetails";
 
 type Phase = "idle" | "running" | "fixed" | "failed";
 
@@ -46,6 +47,7 @@ export function AiFixHtmlDialog({
   const [phase, setPhase] = useState<Phase>("idle");
   const [fixed, setFixed] = useState<string | null>(null);
   const [streamed, setStreamed] = useState("");
+  const [apiTrace, setApiTrace] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [stalledSecs, setStalledSecs] = useState(0);
@@ -53,6 +55,8 @@ export function AiFixHtmlDialog({
   const lastOutputAt = useRef<number>(Date.now());
   const jobId = useRef<string | null>(null);
   const starting = useRef(false);
+  const pendingEvents = useRef<AiHtmlFixEvent[]>([]);
+  const receiveEvent = useRef<(event: AiHtmlFixEvent) => void>(() => {});
   const closed = useRef(false);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const previousFocus = useRef<HTMLElement | null>(null);
@@ -89,7 +93,7 @@ export function AiFixHtmlDialog({
       if (event.key === "Tab") {
         const controls = Array.from(
           dialogRef.current?.querySelectorAll<HTMLElement>(
-            'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), [tabindex="0"]',
+            'button:not(:disabled), input:not(:disabled), textarea:not(:disabled), summary, [tabindex="0"]',
           ) ?? [],
         );
         const first = controls[0];
@@ -138,6 +142,14 @@ export function AiFixHtmlDialog({
     const handleEvent = (payload: AiHtmlFixEvent) => {
       if (payload.chapterId !== chapterId || payload.jobId !== jobId.current) return;
       if (payload.kind === "started") return;
+      if (payload.kind === "status") {
+        setApiTrace((messages) =>
+          messages.length < 20
+            ? [...messages, payload.message]
+            : [...messages.slice(0, 3), ...messages.slice(-16), payload.message],
+        );
+        return;
+      }
       if (payload.kind === "stream") {
         setStreamed(payload.partialText ?? "");
         lastOutputAt.current = Date.now();
@@ -165,8 +177,13 @@ export function AiFixHtmlDialog({
         setNotice(payload.message);
       }
     };
+    receiveEvent.current = handleEvent;
     listen<AiHtmlFixEvent>("ai-html-fix-event", (event) => {
-      handleEvent(event.payload);
+      if (starting.current && !jobId.current && event.payload.chapterId === chapterId) {
+        pendingEvents.current.push(event.payload);
+      } else {
+        handleEvent(event.payload);
+      }
     })
       .then((fn) => {
         if (disposed) fn();
@@ -177,6 +194,7 @@ export function AiFixHtmlDialog({
       });
     return () => {
       disposed = true;
+      receiveEvent.current = () => {};
       unlisten?.();
       if (jobId.current) {
         const running = jobId.current;
@@ -205,9 +223,11 @@ export function AiFixHtmlDialog({
   const handleFix = useCallback(async () => {
     if (!selection || !consent || jobId.current || starting.current) return;
     starting.current = true;
+    pendingEvents.current = [];
     lastOutputAt.current = Date.now();
     setStalledSecs(0);
     setPhase("running");
+    setApiTrace([]);
     setNotice(null);
     setFixed(null);
     setStreamed("");
@@ -226,8 +246,11 @@ export function AiFixHtmlDialog({
         return;
       }
       jobId.current = started.jobId;
+      for (const event of pendingEvents.current) receiveEvent.current(event);
+      pendingEvents.current = [];
     } catch (error) {
       starting.current = false;
+      pendingEvents.current = [];
       if (closed.current) return;
       setPhase("failed");
       setNotice(
@@ -304,8 +327,11 @@ export function AiFixHtmlDialog({
                   />
                   <span>
                     I understand my current draft HTML will be sent to{" "}
-                    {agentLabel(selection.agent, providers.cli, providers.custom)} on this
-                    computer to repair its structure.
+                    {agentLabel(selection.agent, providers.cli, providers.custom)}
+                    {selection.agent.startsWith("custom:")
+                      ? " at its configured API endpoint"
+                      : " through its installed tool"}{" "}
+                    to repair its structure.
                   </span>
                 </label>
                 <div className="button-row">
@@ -348,10 +374,14 @@ export function AiFixHtmlDialog({
             ) : null}
             {running && stalledSecs >= STALL_WARNING_AFTER_SECS ? (
               <StatusNotice kind="info">
-                No output for {stalledSecs}s — still running. Slow connections can stall
-                for minutes; your draft is safe. You can wait or Cancel.
+                No answer text for {stalledSecs}s. Your draft is safe. You can wait or
+                Cancel.
+                {selection.agent.startsWith("custom:")
+                  ? " Open API request details below to check the response and reasoning activity."
+                  : " The tool has not returned more answer text yet."}
               </StatusNotice>
             ) : null}
+            <ApiRequestDetails messages={apiTrace} />
             {running || streamed !== "" ? (
               <textarea
                 ref={streamRef}

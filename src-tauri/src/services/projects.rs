@@ -31,7 +31,45 @@ pub fn list_chapters(data_dir: &Path, project_id: &str) -> Result<Vec<ChapterSum
             "This project no longer exists in local storage.",
         ));
     }
-    projects::list_chapters(&conn, project_id)
+    let mut chapters = projects::list_chapters(&conn, project_id)?;
+    // Navigation is immutable source metadata, so existing projects need no migration.
+    // Books already imported with missing/unreadable navigation keep the flat list.
+    let navigation = (|| -> Result<Vec<epub::nav::NavEntry>, AppError> {
+        let relative: String = conn.query_row(
+            "SELECT source_snapshot_path FROM projects WHERE id = ?1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        let mut archive = epub::archive::SafeArchive::open(
+            &snapshot_abs_path(data_dir, &relative)?,
+            &crate::security::ArchiveLimits::default(),
+        )?;
+        let opf_path = epub::container::find_opf_path(&mut archive)?;
+        let opf = epub::opf::parse_opf(&archive.read_entry(&opf_path)?, &opf_path)?;
+        match opf.nav_href {
+            Some(path) => epub::nav::parse_nav(&archive.read_entry(&path)?, &path),
+            None => match opf.ncx_href {
+                Some(path) => epub::nav::parse_ncx(&archive.read_entry(&path)?, &path),
+                None => Ok(Vec::new()),
+            },
+        }
+    })();
+    if let Ok(entries) = navigation {
+        let mut by_resource = std::collections::HashMap::new();
+        for entry in &entries {
+            by_resource.entry(entry.resource.as_str()).or_insert(entry);
+        }
+        for chapter in &mut chapters {
+            if let Some(entry) = by_resource.get(chapter.resource_href.as_str()) {
+                // Navigation metadata may have been missing during an older
+                // import build. Re-derive the stored display title from the
+                // immutable EPUB snapshot when its nav/NCX becomes supported.
+                chapter.title = entry.title.clone();
+                chapter.navigation_groups = entry.groups.clone();
+            }
+        }
+    }
+    Ok(chapters)
 }
 
 /// Reads the declared cover image from the project's immutable snapshot.

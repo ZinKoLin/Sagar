@@ -394,6 +394,24 @@ button {
   font-size: var(--text-sm);
 }
 
+.workspace__save-action {
+  flex: none;
+}
+
+.workspace__translation {
+  flex: 0 1 180px;
+  min-width: 40px;
+  height: 34px;
+  font-size: var(--text-sm);
+}
+
+.workspace__translation > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .workspace__notice {
   padding: var(--space-2) var(--space-4);
   border-bottom: var(--border-subtle);
@@ -566,6 +584,66 @@ button {
   margin-bottom: var(--space-4);
   overflow-wrap: anywhere;
 }
+
+.bilingual-study {
+  max-width: 100%;
+  font-family: var(--font-book);
+  font-size: var(--text-book);
+  line-height: var(--leading-book);
+}
+
+.bilingual-study__hint {
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--color-text-muted);
+  margin: 0 0 var(--space-2);
+}
+
+.bilingual-study__pair {
+  padding: var(--space-3) 0;
+  border-top: var(--border-subtle);
+}
+
+.bilingual-study__source,
+.bilingual-study__target {
+  margin: 0;
+  color: var(--color-text);
+}
+
+.bilingual-study__target {
+  margin-top: var(--space-2);
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-accent);
+}
+
+.bilingual-study__mark {
+  color: inherit;
+  border-radius: 0.2em;
+  padding: 0 0.08em;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.bilingual-study__mark--0 { background: color-mix(in srgb, #f2c94c 45%, transparent); }
+.bilingual-study__mark--1 { background: color-mix(in srgb, #56ccf2 38%, transparent); }
+.bilingual-study__mark--2 { background: color-mix(in srgb, #6fcf97 42%, transparent); }
+.bilingual-study__mark--3 { background: color-mix(in srgb, #bb6bd9 32%, transparent); }
+.bilingual-study__mark--4 { background: color-mix(in srgb, #f2994a 38%, transparent); }
+.bilingual-study__mark--5 { background: color-mix(in srgb, #eb5757 28%, transparent); }
+
+.bilingual-study__analysis,
+.bilingual-study__analysis-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+}
+
+.bilingual-study__analysis-error { color: var(--color-danger); }
 
 /* Import notes shown once after opening an imported project */
 
@@ -923,7 +1001,8 @@ button {
   gap: var(--space-3);
 }
 
-.ai-proposal {
+.ai-proposal,
+.ai-reading-preview {
   max-height: 320px;
   overflow: auto;
   overscroll-behavior: contain;
@@ -932,6 +1011,16 @@ button {
   background: var(--color-bg);
   padding: var(--space-3) var(--space-4);
   line-height: var(--leading-book);
+}
+
+.ai-reading-preview {
+  min-height: 160px;
+  max-height: min(45vh, 420px);
+  color: var(--color-text);
+  font-family: var(--font-book);
+  font-size: var(--text-book);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .ai-stream {
@@ -1364,6 +1453,22 @@ button {
 }
 .chapter-editor :where(p) {
   margin: 0 0 1em;
+}
+.chapter-editor :where(ol, ul) {
+  margin: 0 0 1em;
+  padding-inline-start: 2em;
+}
+.chapter-editor :where(ol) {
+  list-style: decimal;
+}
+.chapter-editor :where(ul) {
+  list-style: disc;
+}
+.chapter-editor :where(li + li) {
+  margin-block-start: 0.35em;
+}
+.chapter-editor :where(li > p) {
+  margin-block-end: 0.35em;
 }
 .chapter-editor li > p {
   margin-block: 0;
@@ -2380,4 +2485,43 @@ button {
 }
 .project-list--grid .project-item > .project-row__remove {
   grid-column: 3;
+}
+
+.chapter-list__row {
+  display: flex;
+  align-items: center;
+}
+.chapter-list__row > .chapter-list__select {
+  min-width: 0;
+  flex: 1;
+}
+.chapter-list__toggle {
+  flex: none;
+}
+.chapter-list__group-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.chapter-list__children {
+  list-style: none;
+  margin: 0;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--color-border);
+}
+
+.chapter-picker__option-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.chapter-picker__context {
+  display: block;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
 }

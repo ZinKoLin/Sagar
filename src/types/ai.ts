@@ -65,9 +65,16 @@ export type AiTranslationStart = {
 export type AiTranslationEvent = {
   jobId: string;
   chapterId: string;
-  kind: "started" | "stream" | "done" | "failed" | "cancelled";
+  kind:
+    | "started"
+    | "status"
+    | "stream"
+    | "done"
+    | "needs_repair"
+    | "failed"
+    | "cancelled";
   proposalHtml: string | null;
-  /** Running full-so-far output for `stream` events. */
+  /** Running translated text for `stream` events. */
   partialText: string | null;
   message: string;
 };
@@ -79,9 +86,9 @@ export type AiHtmlFixStart = {
 export type AiHtmlFixEvent = {
   jobId: string;
   chapterId: string;
-  kind: "started" | "stream" | "done" | "failed" | "cancelled";
+  kind: "started" | "status" | "stream" | "done" | "failed" | "cancelled";
   fixedHtml: string | null;
-  /** Running full-so-far output for `stream` events. */
+  /** Running translated text for `stream` events. */
   partialText: string | null;
   message: string;
 };
