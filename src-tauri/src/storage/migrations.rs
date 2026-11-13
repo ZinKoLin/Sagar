@@ -142,6 +142,17 @@ const MIGRATIONS: &[(i64, &str)] = &[
         "ALTER TABLE projects ADD COLUMN original_source_path TEXT;",
     ),
     (9, "ALTER TABLE projects ADD COLUMN custom_cover TEXT;"),
+    (
+        10,
+        "CREATE TABLE translation_outputs (
+            id TEXT PRIMARY KEY,
+            chapter_id TEXT NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+            html TEXT NOT NULL,
+            state TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX idx_translation_outputs_chapter ON translation_outputs(chapter_id);",
+    ),
 ];
 
 /// Highest defined schema version. Currently asserted on by tests; production

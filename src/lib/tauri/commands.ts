@@ -187,6 +187,8 @@ export async function exportEpub(
   title: string | null,
   language: string | null,
   includeOriginal = true,
+  bilingual = false,
+  bilingualAlignments: Record<string, BilingualAlignmentExport[]> = {},
 ): Promise<ExportOutcome> {
   try {
     return await invoke<ExportOutcome>("export_epub", {
@@ -196,11 +198,20 @@ export async function exportEpub(
       title,
       language,
       includeOriginal,
+      bilingual,
+      bilingualAlignments,
     });
   } catch (error) {
     throw toCommandError(error);
   }
 }
+
+export type BilingualAlignmentExport = {
+  sourceText: string;
+  targetText: string;
+  meaning: string;
+  grammarNote: string;
+};
 
 export async function saveChapterDocument(
   chapterId: string,

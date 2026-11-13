@@ -3,6 +3,7 @@ import { HtmlCode } from "../../components/HtmlCode";
 import { Icon } from "../../components/Icon";
 import { StatusNotice } from "../../components/StatusNotice";
 import type { ChapterContent } from "../../types/chapter";
+import { BilingualStudyView } from "./BilingualStudyView";
 
 /** Full chapter preview is allowlisted in Rust. Raw XHTML is displayed as text. */
 export function SourcePane({
@@ -10,13 +11,15 @@ export function SourcePane({
   loading,
   error,
   onRetry,
+  targetHtml,
 }: {
   content: ChapterContent | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  targetHtml: string;
 }) {
-  const [view, setView] = useState<"reader" | "html">("reader");
+  const [view, setView] = useState<"reader" | "html" | "bilingual">("reader");
   const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "error">(
     "idle",
   );
@@ -45,9 +48,10 @@ export function SourcePane({
     <section className="pane pane--source" aria-labelledby="source-pane-heading">
       <div className="pane__header">
         <h2 className="pane__heading" id="source-pane-heading">
-          Original <span className="pane__badge">Read only</span>
+          {view === "bilingual" ? "အင်္ဂလိပ်-မြန်မာ တွဲဖတ်" : "Original"}
+          <span className="pane__badge">{view === "bilingual" ? "ဖတ်ရန်" : "Read only"}</span>
         </h2>
-        <fieldset className="view-switch view-switch--icons" aria-label="Original view">
+        <fieldset className="view-switch view-switch--icons" aria-label="မူရင်းစာဖတ်မြင်ကွင်း">
           {view === "html" ? (
             <button
               type="button"
@@ -69,6 +73,16 @@ export function SourcePane({
             onClick={() => setView("reader")}
           >
             <Icon name="book" />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            aria-label="အင်္ဂလိပ်-မြန်မာ တွဲဖတ်မြင်ကွင်း"
+            title="အင်္ဂလိပ်နဲ့ မြန်မာဘာသာပြန်ကို တွဲဖတ်ရန်"
+            aria-pressed={view === "bilingual"}
+            onClick={() => setView("bilingual")}
+          >
+            <Icon name="languages" />
           </button>
           <button
             type="button"
@@ -104,6 +118,13 @@ export function SourcePane({
         {!loading && !error && content ? (
           view === "html" ? (
             <HtmlCode value={content.sourceDocument} />
+          ) : view === "bilingual" ? (
+            <BilingualStudyView
+              key={content.chapterId}
+              chapterId={content.chapterId}
+              sourceHtml={content.previewHtml}
+              targetHtml={targetHtml}
+            />
           ) : (
             <article
               className="book-text"

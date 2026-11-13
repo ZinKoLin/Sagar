@@ -156,6 +156,25 @@ export function AiSettingsDialog({ onClose, appearance }: AiSettingsDialogProps)
     setActionError(null);
   }
 
+  function openGrokForm() {
+    const existing = providers?.custom.find(
+      (provider) => provider.baseUrl === "https://api.x.ai/v1",
+    );
+    setTab("providers");
+    if (existing) {
+      openEditForm(existing);
+    } else {
+      setForm({
+        ...emptyForm,
+        name: "Grok (xAI)",
+        baseUrl: "https://api.x.ai/v1",
+        model: "grok-4.7",
+      });
+      setFormOpen(true);
+      setActionError(null);
+    }
+  }
+
   function fieldErrorFor(code: string): [string, string] | null {
     switch (code) {
       case "invalid_provider_name":
@@ -512,12 +531,23 @@ export function AiSettingsDialog({ onClose, appearance }: AiSettingsDialogProps)
                       <Icon name="plus" />
                       Add custom provider
                     </button>
+                    <button type="button" className="btn" onClick={openGrokForm}>
+                      <Icon name="sparkles" />
+                      Grok (xAI) ချိတ်ဆက်ရန်
+                    </button>
                   </div>
                 ) : null}
               </section>
 
               {formOpen ? (
                 <section aria-label={form.editingId ? "Edit provider" : "Add provider"}>
+                  {form.baseUrl === "https://api.x.ai/v1" ? (
+                    <p className="dialog__muted">
+                      Grok ကို xAI API ဖြင့် တိုက်ရိုက်သုံးပါမည်။ xAI API key ဖြည့်ပြီး Save နှိပ်ပါ။ ပြီးလျှင်
+                      Translation Model တွင် Grok (xAI) ကို ရွေးပါ။ ဘာသာပြန်ချိန်၌ စာသားကို xAI သို့
+                      ပို့မည်ဖြစ်ပြီး သင့် API အကောင့်မှ အသုံးပြုခ ကောက်ခံနိုင်ပါသည်။
+                    </p>
+                  ) : null}
                   <div className="form-grid">
                     <label className="form-field">
                       <span>Name</span>
@@ -631,7 +661,11 @@ export function AiSettingsDialog({ onClose, appearance }: AiSettingsDialogProps)
               hidden={tab !== "translation"}
             >
               {tab === "translation" ? (
-                <TranslationModelSection cli={providers.cli} custom={providers.custom} />
+                <TranslationModelSection
+                  cli={providers.cli}
+                  custom={providers.custom}
+                  onConfigureGrok={openGrokForm}
+                />
               ) : null}
             </div>
           </>

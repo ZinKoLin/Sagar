@@ -65,7 +65,14 @@ export type AiTranslationStart = {
 export type AiTranslationEvent = {
   jobId: string;
   chapterId: string;
-  kind: "started" | "status" | "stream" | "done" | "failed" | "cancelled";
+  kind:
+    | "started"
+    | "status"
+    | "stream"
+    | "done"
+    | "needs_repair"
+    | "failed"
+    | "cancelled";
   proposalHtml: string | null;
   /** Running translated text for `stream` events. */
   partialText: string | null;

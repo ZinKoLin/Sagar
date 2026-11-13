@@ -1,5 +1,355 @@
 # Plan.md — EPUB Translation Studio
 
+### GitHub publication snapshot — 2026-11-13
+
+Prepared the current user-requested working tree for publication to the user's
+existing fork https://github.com/ZinKoLin/Sagar on branch
+codex/sagar-translation-updates. Upstream saturngod/Sagar is read-only for this
+account. The snapshot includes the pre-existing translation recovery/background,
+bilingual study/export and XHTML preservation work, plus provider compatibility,
+Grok integrations and the persistent handoff/update rules. These existing edits
+were preserved and included at the user's explicit request to upload the project.
+
+Pre-publication checks: git diff --check passed; a filename-only scan of source,
+tests and documentation found no common API-token/private-key patterns. Generated
+builds, local translation databases and credential files are not staged. Current
+builds and focused feature test results are recorded above; this publication
+does not claim the full suite, EPUBCheck or cross-platform checks passed.
+Next: verify the pushed commit matches the local snapshot, then continue the
+remaining native chapter-translation and release verification tasks.
+
+### Grok Build account-login provider — 2026-11-13
+
+Added standalone `grok` CLI identity, provider discovery including ~/.grok/bin,
+saved translation selection, model listing with a labeled known-model fallback,
+and headless translation/HTML repair through the shared execution adapter.
+Grok Build uses its locally authenticated CLI session; Sagar does not request
+or import an API key for this provider. The existing direct xAI API option stays
+separate. The UI explains account login and account usage limits in Burmese.
+Headless runs use the documented plain response format, disable built-in tools,
+subagents, memory and web search, cap turns, and skip automatic updates. Existing
+timeouts, cancellation, output limits, retention and chapter validation apply.
+Nonzero/empty responses fail without displaying CLI stderr paths or diagnostics.
+
+Installed official Grok Build 1.0.77 in ~/.grok/bin from the official Google
+Storage release URL published by x.ai/cli/install.ps1. Browser OAuth completed
+successfully. Authenticated `grok models` listed grok-4.7, grok-4.7-build-fast,
+grok-4.6 and grok-4.5. A synthetic prompt with the exact translation flags
+returned `<p>Hello</p>` and exit 0; no book content was sent.
+
+Validation: frontend production build and focused lint passed (existing bundle
+warning). Grok discovery/model parsing/persistence and successful/failed CLI
+output tests passed; fixed-argument regression passed; Rust formatting checks
+passed. Final native cargo build passed and Sagar was relaunched. Native
+Translation Model displays Grok Build (account login) with the four live models;
+no default model change was saved during verification. Account login and a
+synthetic response were verified; a user's full chapter has not been tested.
+References: https://docs.x.ai/build/cli/headless-scripting and
+https://docs.x.ai/build/cli/reference. Actual book translation, minimum-window,
+dark theme, IME and cross-platform behavior are not verified in this task.
+
+### Direct Grok (xAI) provider setup — 2026-11-13
+
+Added a dedicated Grok (xAI) setup entry to Translation Model and a Grok setup
+button in Providers. Both open the existing direct-API provider form prefilled
+with name Grok (xAI), https://api.x.ai/v1 and grok-4.7. Existing xAI providers
+open for editing rather than being duplicated. The API key stays in the existing
+Rust-owned provider storage; saved Grok appears as a separate selectable API
+provider. Requests use the existing custom-provider model list and streaming
+chat/completions transport, with no dependency on OpenCode. Setup explains the
+xAI destination and potential API charges in Burmese. No database migration,
+secret lookup from other apps, or book-content request was needed.
+
+References checked: official xAI Chat Completions documentation at
+https://docs.x.ai/developers/model-capabilities/legacy/chat-completions
+(base URL, grok-4.7 and OpenAI-compatible text requests).
+
+Validation: production frontend build passed (existing bundle-size warning);
+focused Biome checks passed on both changed settings components. New frontend
+regression passed (7 assertions): setup routes to configuration without issuing
+a model request for the setup sentinel, and configured Grok saves a direct
+custom-provider selection instead of OpenCode. Native Windows UI verified:
+selecting the Grok entry opens Providers with the correct name/model/base URL
+and empty API key. Left this form open for the user. Real xAI authentication,
+model listing and translation require the user's API key and were not tested.
+Dark/minimum-window behavior and cross-platform UI remain unverified.
+Next: user enters their xAI key, saves/tests the provider, and selects its model.
+
+### OpenCode 2 model catalog compatibility — 2026-11-13
+
+Reproduced the Translation Model error with installed OpenCode 2.0.31:
+`models --verbose` fails because v2 removed --verbose; plain `models` also
+failed with Location plugins activation against the shared service. The actual
+`models --standalone` command succeeded. Updated services/ai.rs to try the v1
+verbose catalog first, then the private-server v2 catalog, then plain models.
+Added a Windows command fixture reproducing both failure conditions and checking
+that the standalone catalog is parsed. No chapter content was sent.
+
+Validation: all 23 services::ai::tests passed, including the new regression;
+rustfmt --check on services/ai.rs passed. An existing unused-import warning in
+ai_translate.rs remains. Native cargo build passed; relaunched Sagar and verified
+Translation Model → OpenCode shows a live list of 84 models with no catalog error.
+Next: actual provider translation and broader
+OpenCode 2 streaming compatibility remain separate verification work.
+
+### Antigravity translation availability — 2026-11-13
+
+Investigated the repeated request to make Antigravity available in Translation
+Model. Existing code already lists Antigravity, discovers `agy`, loads models
+and executes translations; this machine initially had the desktop app but no
+standalone CLI. Added Burmese CLI availability/setup help to
+`TranslationModelSection.tsx`, and recorded the reply-language and CLI readiness
+rules in `AGENTS.md`. Consulted Google's official installation/authentication
+documentation and started installing the official CLI in LOCALAPPDATA/agy/bin,
+which the existing Rust discovery already searches. No book content was sent.
+
+Validation: `bun run build` passed (existing bundle-size warning).
+Focused Biome check of TranslationModelSection with CRLF passed. The previous
+whole-tree check failed on existing formatting diagnostics. No broad formatting
+or unrelated feature changes were performed. Native UI and real chapter
+translation have not been verified. See PROJECT_HANDOFF.md for installation
+outcome and the next remaining step. No milestone checkboxes changed.
+
+Installation outcome: official CLI 1.5.8 was installed in LOCALAPPDATA/agy/bin;
+the downloaded binary matched the manifest SHA512. `agy --version` succeeded
+and `agy models` returned 18 models. Sagar's existing fallback discovery already
+covers this location. Next step: reopen Settings, choose Antigravity and a model,
+then perform a user-initiated translation. Authentication/translation and native
+UI behavior are not claimed verified by a successful model-list command.
+
+### Persistent handoff and update protocol — 2026-11-13
+
+Added [`PROJECT_HANDOFF.md`](PROJECT_HANDOFF.md) as a concise project-wide
+continuity record for future contributors/AI, covering product scope, architecture,
+storage, recent features, current uncommitted-work cautions, known risks and next
+verification tasks. Updated `AGENTS.md` to require reading the handoff and this
+chronological plan, preserving pre-existing diffs, and recording each code,
+configuration, test or documentation change with actual validation results.
+Clarified that the live master plan is `dev/plan.md` (there is no root `Plan.md`)
+and updated the remaining protocol/definition-of-done references to that path.
+Reconciled the stale AI-only prohibition with the existing rule that AI/network
+features require explicit user authorization and clear consent/privacy handling.
+
+Validation: documentation and worktree state were inspected. No tests, build or
+runtime checks were run for this documentation-only task. The existing worktree
+already contained extensive uncommitted feature changes; they were preserved.
+Next task: inspect those current diffs before any code changes, then run the
+relevant checks and native verification for the feature being continued.
+
+### Long-chapter AI translation — 2026-10-17
+
+Chapters whose XHTML exceeds the single-request limit are translated in
+24,000-character groups of complete paragraph, heading, and list blocks.
+Translated blocks are spliced back into the immutable chapter structure and
+the complete recoverable HTML is saved after every group. Retry detects the
+completed leading blocks and continues from the first unfinished block.
+Individual blocks above the safe group limit still fail clearly rather than
+being split in a way that could damage markup.
+
+Validation: the Rust AI translation unit suite and the large-chapter block
+preservation/resume regression passed; Rust formatting and diff checks passed.
+
+### EPUB 2 navigation compatibility — 2026-10-17
+
+EPUB 2 books are recognized as a supported legacy format. Import reads the
+spine's NCX table of contents when an EPUB 3 `nav` document is absent or
+unreadable, so chapter labels use the book's navigation titles rather than
+falling back to headings. Books without either navigation resource still warn
+and use heading/file-name fallbacks. SVG blocks remain preserved and visibly
+warned because the block editor cannot safely translate their text yet.
+
+Validation: the synthetic EPUB 2 import fixture resolves its chapter title from
+NCX and produces neither the old-format nor missing-navigation warning.
+
+### Bilingual EPUB export — 2026-10-17
+
+The EPUB export dialog now offers a bilingual output option. It pairs each
+translated XHTML block with the matching original block, preserves original
+markup and chapter layout, labels both languages, and safely stops if block
+structure no longer matches. The source language comes from Book Settings;
+English is used when that value is unset. The separate output filename includes
+`-bilingual` and the imported source EPUB is unchanged.
+When a chapter has saved study-view phrase alignments, the bilingual output
+also colors matching English/Myanmar text and includes meaning/grammar tooltips.
+Only matches that occur verbatim inside an XHTML text node are highlighted;
+all other content stays intact.
+
+Validation: production build and Rust formatting passed; paired-block and
+structure-mismatch regression tests passed. The full export integration suite
+was attempted, but 13 tests failed when Windows denied access while finalizing
+temporary EPUB files; several unrelated custom-stream tests also failed in the
+full Rust run. The native export dialog and a generated EPUB in an external
+reader still need visual verification.
+
+### English–Myanmar color study view — 2026-10-17
+
+The source pane has a study view that displays each original English sentence
+with its Myanmar translation below it. The configured translation model
+identifies exact corresponding words and phrases, which share one of six colors.
+Hovering a colored phrase shows its English/Myanmar counterpart, a short meaning,
+and its grammar role. Matching asks for word-level spans when accurate and groups
+words only where grammar requires it. It does not show unmatched-translation
+counts or require manual sentence pairing. Validated matches are cached per
+chapter and source/translation version in local browser storage. The view follows
+live chapter draft updates without changing the translation. Analysis runs in
+four-sentence batches, saving completed matches after each batch so retry
+continues from the last saved batch after a timeout. Each batch has a five-minute
+deadline and the reader reports batch progress. Invalid model-proposed spans are
+discarded individually while exact valid pairs from the same response are kept.
+
+Validation: the targeted frontend regression passed (sentence pairs, matching
+color marks and no manual pairing controls), TypeScript/production build passed,
+targeted Biome lint passed. The existing bundle-size warning remains. Native visual check at
+normal/minimum window sizes, dark theme, keyboard and Myanmar text remains
+pending.
+
+### Sequential chapter translation — 2026-10-15
+
+An opt-in control can continue through chapters in spine order after a successful
+translation. Accepted results save into empty drafts before moving on. The sequence
+pauses for existing chapter drafts, saved recovery output, conflicts, failed saves,
+or translation errors. Cancel stops the current run and sequence; the final chapter
+reports that the book is complete.
+
+Validation: TypeScript/Vite build and Biome check passed. Rust `cargo check` was
+blocked by the existing `aws-lc-sys` native build (NASM unavailable; C compiler
+check exited with status 2). Automated UI/native flow review remains pending.
+
+### Numbered lists in the rich editor — 2026-10-15
+
+The chapter translation editor now explicitly displays ordered-list numbers and
+bullet markers, with readable indentation and spacing. Translation instructions
+call out preserving list containers, item order and numbering attributes. Rich
+editor round-tripping already retains list-item values such as resumed numbering.
+
+Validation: `bun run build` and `cargo fmt --check` passed. Native visual review
+of an imported list remains pending.
+
+### Translation output recovery — 2026-10-15
+
+Completed provider output is now stored append-only before HTML/skeleton validation,
+so a rejected structure remains available without rerunning translation. The
+translation dialog restores saved output, offers HTML checking, copy, and a
+separate HTML repair action, and saves user edits before closing. Repaired output
+can be adopted only after local validation and explicit review. Text checks prevent
+HTML repair from changing translated words. A failed recovery write keeps the
+window and output available with an actionable error. Starting over is an explicit
+confirmed action; existing output snapshots remain stored.
+
+Validation: 50 frontend tests passed; TypeScript/Vite production build passed;
+Biome check and `cargo fmt --check` passed; Rust library suite passed (146 passed,
+2 ignored), targeted recovery/provider tests passed, and EPUB import/export tests
+passed (40 passed, 2 ignored). UI behavior is covered by tests; native UI recovery
+interaction was not separately exercised. Next unfinished task: native recovery flow
+check, including minimum-size and dark-theme review.
+
+### Background chapter translation — 2026-10-15
+
+The workspace now owns a single chapter-bound translation dialog independently
+of the active reading/editing chapter. Run in background hides the dialog while
+keeping its job, event subscription, stream and Retry result alive. A compact
+toolbar control shows the job's original chapter and running/ready/failed state.
+Readers can switch chapters and continue normal autosave. Background completion
+normally retains a proposal for explicit insertion; Open translated chapter
+navigates back through the normal save-flushing path. Insertion is disabled for
+other chapters. The explicit auto-continue option inserts each validated result
+and advances automatically, including replacing the unchanged chapter draft;
+the replacement is saved as an unreviewed draft. It stops if the draft changes
+during translation, a save/validation fails, or the book ends.
+Hidden dialogs release focus trapping and Escape handling. Cancel/X still cancel;
+leaving the book cancels the workspace-owned run, with tooltip/help text explaining
+that lifetime. This does not persist running jobs/proposals across app restart.
+Integration coverage exercises the actual workspace navigation/dialog lifecycle,
+manual edits saved to a second chapter, early/stale events, hidden failure/Retry,
+hidden Escape and original-chapter-only insertion. Targeted lint, TypeScript and
+production build passed (existing bundle warning). Native normal-size light-theme
+dialog chapter label, disabled Generate, progress control, Escape and restored
+focus were visually checked without sending book text. Native running/ready/failed
+background states, minimum-size/dark/IME and cross-platform checks remain pending;
+next unfinished task is exercising one consented background run in the native UI.
+No Rust/storage changes or milestone checkboxes were needed.
+Final frontend suite: 47 passed, zero failures; diff checks passed.
+
+### Readable live translation preview — 2026-10-15
+
+The translation dialog now displays streamed output as selectable read-only
+prose with Myanmar typography and paragraph breaks. Parsing occurs in an inert
+document; only extracted text reaches React, with executable/embedded subtrees
+omitted. Raw HTML remains available in a collapsed disclosure. The preview follows
+new text only while the reader remains near the bottom; scrolling up pauses
+following. Partial/unvalidated/unsaved status is explicit, and existing job,
+Retry, cancellation and insertion rules are unchanged. Hidden disclosure controls
+are excluded from dialog focus wrapping. All 45 frontend tests passed; targeted
+lint and TypeScript/production build passed (existing bundle warning remains).
+Tests cover partial Myanmar text, escaping, script exclusion, live updates,
+read-only HTML and pause/resume scrolling. Native Sagar was inspected at its
+normal size, but an active translation preview was not visually exercised:
+user activity interrupted inspection and no verification translation was sent.
+Minimum-size/light-dark/IME/native streaming checks are the next unfinished
+verification. No milestone checkboxes changed.
+
+### Added-class proposal recovery — 2026-10-15
+
+Proposals and retained Retry prefixes discard newly introduced, unnamespaced
+class attributes only on corresponding elements whose source has no class.
+Tag order/count/nesting must match first, then the recovered result must pass
+the unchanged strict attribute comparison. Existing class changes/removals,
+changed links, and structural changes remain rejected. Myanmar regression
+coverage verifies translated text, existing BOLD_ITAL, savable output and
+completed Retry recovery. All 28 translation-service tests passed. Formatting
+and diff checks passed. Next unfinished task: native Retry/insertion verification;
+no source or saved draft was rewritten and no milestone checkboxes changed.
+
+### Rich continued-list numbering — 2026-10-15
+
+Reproduced the HTML-to-Rich preservation failure: the editor discarded li value
+attributes, including value="6" in a continued numbered list. BookAttributes
+now preserves explicit list-item values through parse/serialize, editing and
+reload. Myanmar round-trip coverage includes multiple value overrides, italic
+classes and a page-break anchor; an interaction regression checks external
+proposal insertion and HTML/Rich switching. The 42-test frontend suite passed,
+followed by all nine insertion/view tests after adding the interaction case.
+TypeScript/production build passed with the existing bundle warning. Full lint
+stops on checkout-wide line-ending formatting differences; changed-file lint
+passed with formatter disabled. Native window/IME and cross-platform visual
+checks remain unverified; next task is switching the affected chapter to Rich
+in the running native app. The preservation guard remains enabled. No milestone
+checkboxes changed.
+
+### Page-break order rejection — 2026-10-15
+
+Read-only source inspection and supplied translated HTML identified page_161
+moved across an italic citation. Prompt instructions now explicitly preserve
+page-break order relative to inline elements. Structural errors report the
+first mismatching position, tags and nesting, or expected/actual element counts,
+without attribute values/book text. A synthetic Myanmar regression covers the
+moved marker, safe Retry rejection boundary and accepted source-order correction.
+All 27 translation-service tests, formatting and diff checks passed; the native
+development app rebuilt and relaunched. Existing test-import/cache warnings
+remain. Next unfinished task: verify provider output and Retry in the native UI;
+prompt guidance cannot guarantee structurally valid generated output. No saved
+draft/source was changed and no milestone checkboxes changed.
+
+### Protected attribute diagnostics — 2026-10-15
+
+Follow-up: read-only inspection of the user's immutable source confirmed a
+plain italic term precedes a BOLD_ITAL term; the returned translation reverses
+these terms and moves the class between elements. Translation instructions now
+explicitly require rephrasing to retain inline order/attributes. A synthetic
+Myanmar regression checks rejection of moved classes, safe Retry boundaries and
+acceptance of corrected word order. All 26 translation-service tests passed;
+native provider output remains unverified. Source and saved drafts are unchanged.
+
+Proposal rejection now identifies whether a protected attribute was added,
+removed or changed, with its name, element tag and one-based chapter element
+position. Attribute values and translated text remain excluded from errors.
+Strict validation, saved drafts and Retry boundaries are unchanged. All 25
+translation-service tests and Rust formatting/diff checks passed. An existing
+unused AtomicBool test import warning remains. Next unfinished task: reproduce
+the reported failure with source/returned markup to identify the actual changed
+attribute; native error-display verification remains pending. No milestone
+checkboxes changed.
+
 ### Rich text normalization and book compatibility — 2026-10-14
 
 Supersedes preserving every empty decoration below. Conversion now removes

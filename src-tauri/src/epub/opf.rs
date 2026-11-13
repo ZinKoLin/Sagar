@@ -57,7 +57,9 @@ pub fn parse_opf(bytes: &[u8], opf_path: &str) -> Result<ParsedOpf, AppError> {
 
     let mut warnings = Vec::new();
     let version = package.attribute("version").unwrap_or("");
-    if !version.starts_with("3") {
+    // EPUB 2 is supported through its NCX table of contents; reserve the
+    // compatibility warning for versions outside the implemented 2.x/3.x set.
+    if !version.starts_with("2") && !version.starts_with("3") {
         warnings.push(ImportWarning {
             code: "epub_version".into(),
             message: "This book uses an older EPUB format; some content may be \
@@ -251,12 +253,27 @@ mod tests {
     }
 
     #[test]
-    fn warns_on_epub2_version_and_missing_title() {
+    fn accepts_epub2_version_and_still_warns_on_missing_title() {
         let opf = OPF.replacen("version=\"3.0\"", "version=\"2.0\"", 1);
         let opf = opf.replacen("<dc:title>Riverside Tales</dc:title>", "", 1);
         let parsed = parse_opf(opf.as_bytes(), "content.opf").expect("parse opf");
-        assert!(parsed.warnings.iter().any(|w| w.code == "epub_version"));
+        assert!(!parsed.warnings.iter().any(|w| w.code == "epub_version"));
         assert!(parsed.warnings.iter().any(|w| w.code == "metadata_missing"));
+    }
+
+    #[test]
+    fn reads_epub2_ncx_reference_from_the_spine() {
+        let opf = OPF
+            .replacen("version=\"3.0\"", "version=\"2.0\"", 1)
+            .replacen(
+                "<item id=\"cover-img\" href=\"images/cover.png\" media-type=\"image/png\"/>",
+                "<item id=\"cover-img\" href=\"images/cover.png\" media-type=\"image/png\"/>\n  <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>",
+                1,
+            )
+            .replacen("<spine>", "<spine toc=\"ncx\">", 1);
+        let parsed = parse_opf(opf.as_bytes(), "OEBPS/content.opf").expect("parse epub2 opf");
+        assert_eq!(parsed.ncx_href.as_deref(), Some("OEBPS/toc.ncx"));
+        assert!(!parsed.warnings.iter().any(|w| w.code == "epub_version"));
     }
 
     #[test]

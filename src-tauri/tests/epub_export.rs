@@ -192,6 +192,8 @@ fn export_preserves_trailing_resources_when_zip_has_directory_entries() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export with directories");
@@ -244,6 +246,8 @@ fn translated_fixture_exports_and_reimports_with_assets_intact() {
             title: Some("မြစ်ဇာတ်ကြောင်း".into()),
             language: Some("my".into()),
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export succeeds");
@@ -385,6 +389,8 @@ fn completed_export_is_blocked_while_required_blocks_are_pending() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect_err("completed export must be blocked");
@@ -421,6 +427,8 @@ fn export_never_overwrites_its_own_snapshot() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect_err("snapshot overwrite rejected");
@@ -547,6 +555,8 @@ fn rich_translation_images_survive_save_export_and_reopen() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export");
@@ -710,6 +720,8 @@ fn empty_image_chapter_accepts_free_document_and_exports_it() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export");
@@ -805,6 +817,8 @@ fn draft_export_includes_reviewed_and_unreviewed_chapter_documents() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("draft export");
@@ -862,6 +876,8 @@ fn book_semantics_and_table_sections_save_export_and_reopen() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export");
@@ -924,6 +940,8 @@ fn authored_tables_save_reload_export_and_reopen() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export");
@@ -972,6 +990,8 @@ fn draft_export_without_originals_omits_untranslated_chapters() {
             title: None,
             language: None,
             include_original: false,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("filtered draft export");
@@ -1052,6 +1072,8 @@ fn draft_export_without_originals_requires_a_translation() {
             title: None,
             language: None,
             include_original: false,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect_err("empty filtered export must fail");
@@ -1113,6 +1135,8 @@ fn book_settings_persist_instructions_and_export_metadata_without_changing_sourc
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export saved settings");
@@ -1171,6 +1195,8 @@ fn export_rejects_original_path_even_when_original_has_changed() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect_err("original path protected");
@@ -1209,11 +1235,15 @@ fn legacy_original_hash_is_protected_and_filtered_links_block_export() {
                 title: None,
                 language: None,
                 include_original: false,
+                bilingual: false,
+                bilingual_alignments: std::collections::HashMap::new(),
             },
         )
         .expect_err("unsafe export rejected");
         assert_eq!(error.code, expected);
         if destination != source {
+            assert!(error.message.contains("ch2.xhtml"), "{}", error.message);
+            assert!(error.message.contains("ch1.xhtml"), "{}", error.message);
             assert!(!destination.exists());
         }
     }
@@ -1230,11 +1260,40 @@ fn legacy_original_hash_is_protected_and_filtered_links_block_export() {
                 title: None,
                 language: None,
                 include_original: false,
+                bilingual: false,
+                bilingual_alignments: std::collections::HashMap::new(),
             }
         )
         .is_err()
     );
     assert_eq!(std::fs::read(destination).unwrap(), b"previous output");
+}
+
+#[test]
+fn missing_optional_navigation_script_warns_but_does_not_block_export() {
+    let dir = tempdir();
+    let mut files = rich_book_files();
+    let nav = files
+        .iter_mut()
+        .find(|(name, _)| name == "OEBPS/nav.xhtml")
+        .unwrap();
+    nav.1 = String::from_utf8(nav.1.clone())
+        .unwrap()
+        .replace("<body>", "<body><script src=\"js/kobo.js\"></script>")
+        .into_bytes();
+    let refs: Vec<(&str, &[u8])> = files
+        .iter()
+        .map(|(name, bytes)| (name.as_str(), bytes.as_slice()))
+        .collect();
+    let source = write_epub(&dir, "source.epub", &refs);
+    let warnings = epub::export::validate_output(&source)
+        .expect("missing optional script must not block structural validation");
+
+    assert!(warnings.iter().any(|warning| {
+        warning.code == "missing_optional_script"
+            && warning.message.contains("js/kobo.js")
+            && warning.message.contains("OEBPS/nav.xhtml")
+    }));
 }
 
 #[test]
@@ -1284,6 +1343,8 @@ fn authored_heading_updates_nested_fragment_navigation() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .unwrap();
@@ -1407,6 +1468,8 @@ fn custom_cover_persists_exports_restores_and_keeps_source_immutable() {
                     title: None,
                     language: None,
                     include_original: true,
+                    bilingual: false,
+                    bilingual_alignments: std::collections::HashMap::new(),
                 },
             )
         };
@@ -1546,6 +1609,8 @@ fn svg_cover_with_html_doctype_loads_and_exports_unchanged() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export with directories");
@@ -1627,6 +1692,8 @@ fn xhtml11_doctype_imports_editable_content_and_survives_export() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("export");

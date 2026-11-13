@@ -18,11 +18,19 @@ const containers = [
   "dd",
 ];
 const blockSelector =
-  "p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,hr,table,div,section,article,main,header,footer,aside,figure,figcaption,pre,dl,dt,dd,svg,picture,img";
+  "p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,hr,table,div,section,article,main,header,footer,aside,figure,figcaption,pre,dl,dt,dd,svg,picture,img,a";
 const inline = [
   "span",
   "b",
   "i",
+  // Keep semantic inline tags as XHTML nodes. Mapping <em>/<strong> to the
+  // editor's italic/bold marks can rewrite one tag as the other when marks
+  // overlap or carry EPUB classes, which trips the HTML preservation guard.
+  "em",
+  "strong",
+  "u",
+  "s",
+  "code",
   "sup",
   "sub",
   "ruby",
@@ -39,6 +47,30 @@ const inline = [
 ];
 
 export const BookStructure = [
+  // ProseMirror's document schema cannot place a normal hardBreak directly
+  // at the top level, so retain standalone XHTML breaks as block atoms.
+  Node.create({
+    name: "book_standalone_break",
+    group: "block",
+    atom: true,
+    selectable: false,
+    priority: 130,
+    parseHTML: () => [
+      {
+        tag: "br",
+        // A break inside a text block is an inline hard break. Breaks that
+        // normalizeRichDocument leaves as siblings of blocks (including
+        // inside EPUB containers such as div/blockquote) must stay block
+        // nodes or ProseMirror wraps them in a paragraph on serialization.
+        priority: 130,
+        getAttrs: (element) =>
+          element.parentElement?.closest("p,h1,h2,h3,h4,h5,h6,pre,dt")
+            ? false
+            : null,
+      },
+    ],
+    renderHTML: () => ["br"],
+  }),
   Node.create({
     name: "book_preserved_table",
     group: "block",
@@ -49,7 +81,7 @@ export const BookStructure = [
         tag: "table",
         priority: 130,
         getAttrs: (element) =>
-          element.querySelector("thead,tfoot,caption")
+          element.querySelector("thead,tfoot,caption,colgroup")
             ? { original: documentFragment(element.outerHTML) }
             : false,
       },
@@ -82,6 +114,8 @@ export const BookStructure = [
             const safe = document.createElement(
               [
                 "table",
+                "colgroup",
+                "col",
                 "thead",
                 "tbody",
                 "tfoot",
@@ -129,6 +163,41 @@ export const BookStructure = [
       renderHTML: ({ HTMLAttributes }) => [tag, HTMLAttributes],
     }),
   ),
+  // Keep EPUB links as inline XHTML nodes instead of Tiptap Link marks. The
+  // mark parser rejects proprietary but valid book schemes such as kindle:embed
+  // and silently drops their href during HTML → Rich conversion.
+  Node.create({
+    name: "book_inline_link",
+    group: "inline",
+    inline: true,
+    content: "inline*",
+    defining: true,
+    priority: 125,
+    addAttributes: () => ({
+      href: {
+        default: null,
+        parseHTML: (element) => element.getAttribute("href"),
+      },
+    }),
+    parseHTML: () => [
+      {
+        tag: "a[href]",
+        priority: 125,
+        getAttrs: (element) =>
+          element.parentElement?.closest(
+            "p,h1,h2,h3,h4,h5,h6,span,pre,dt,sup,sub,ruby,rt,rp,blockquote,li,td,th",
+          )
+            ? {}
+            : false,
+      },
+    ],
+    renderHTML: ({ HTMLAttributes }) => ["a", HTMLAttributes, 0],
+    addNodeView: () => () => {
+      const dom = document.createElement("a");
+      dom.addEventListener("click", (event) => event.preventDefault());
+      return { dom, contentDOM: dom };
+    },
+  }),
   // EPUB containers can mix paragraphs and standalone links. Keep those
   // links as blocks so parsing does not silently add a paragraph wrapper.
   Node.create({
@@ -144,15 +213,17 @@ export const BookStructure = [
     }),
     parseHTML: () => [
       {
-        tag: "a[href]",
+        tag: "a",
         priority: 120,
-        getAttrs: (element) =>
-          element.parentElement?.matches(containers.join(",")) &&
-          Array.from(element.parentElement.children).some((child) =>
-            child.matches(blockSelector),
-          )
+        getAttrs: (element) => {
+          const parent = element.parentElement;
+          return parent?.matches(`${containers.join(",")},body`) &&
+            Array.from(parent.children).some((child) =>
+              child.matches(blockSelector),
+            )
             ? {}
-            : false,
+            : false;
+        },
       },
     ],
     renderHTML: ({ HTMLAttributes }) => ["a", HTMLAttributes, 0],
@@ -160,6 +231,46 @@ export const BookStructure = [
     addNodeView: () => () => {
       const dom = document.createElement("a");
       return { dom, contentDOM: dom };
+    },
+  }),
+  // A standalone EPUB image is structural content, not a paragraph break.
+  // Keep its complete XHTML as an inert atom: mounting an imported <img> in
+  // the privileged editor WebView could fetch a book-relative resource, while
+  // the stock image node may normalize a block image during HTML round-trip.
+  Node.create({
+    name: "book_block_image",
+    group: "block",
+    atom: true,
+    selectable: false,
+    priority: 125,
+    addAttributes: () => ({ original: { default: "", rendered: false } }),
+    parseHTML: () => [
+      {
+        tag: "img",
+        priority: 125,
+        getAttrs: (element) =>
+          element.parentElement?.closest(
+            "p,h1,h2,h3,h4,h5,h6,span,a,pre,dt,sup,sub,ruby,rt,rp",
+          )
+            ? false
+            : { original: documentFragment(element.outerHTML) },
+      },
+    ],
+    renderHTML: ({ node }) => {
+      const holder = document.createElement("div");
+      holder.innerHTML = node.attrs.original as string;
+      return holder.firstElementChild ?? document.createElement("img");
+    },
+    addNodeView: () => ({ node }) => {
+      const dom = document.createElement("span");
+      dom.className = "book-protected-content";
+      dom.contentEditable = "false";
+      const source = new DOMParser().parseFromString(
+        node.attrs.original as string,
+        "text/html",
+      );
+      dom.textContent = `Image preserved${source.querySelector("img")?.getAttribute("alt") ? `: ${source.querySelector("img")?.getAttribute("alt")}` : ""} — edit in HTML view.`;
+      return { dom };
     },
   }),
   Image.extend({
@@ -205,7 +316,7 @@ export const BookStructure = [
         dom.contentEditable = "false";
         dom.textContent =
           tag === "svg"
-            ? "SVG artwork — preserved. Edit in HTML view."
+            ? "SVG ပုံကို ထိန်းသိမ်းထားသည်။ HTML မြင်ကွင်းတွင် ပြင်ဆင်ပါ။"
             : "Responsive image — preserved. Edit in HTML view.";
         return { dom };
       },
@@ -277,7 +388,19 @@ export const BookStructure = [
       group: "inline",
       inline: true,
       content: "inline*",
-      parseHTML: () => [{ tag, priority: 110 }],
+      parseHTML: () => [
+        {
+          tag,
+          priority: 110,
+          // Code inside <pre> belongs to StarterKit's codeBlock text content.
+          // Parsing it as a separate inline node empties <pre><code> and moves
+          // its text into a new paragraph during Rich serialization.
+          getAttrs: (element) =>
+            tag === "code" && element.parentElement?.closest("pre")
+              ? false
+              : {},
+        },
+      ],
       renderHTML: ({ HTMLAttributes }) => [tag, HTMLAttributes, 0],
     }),
   ),

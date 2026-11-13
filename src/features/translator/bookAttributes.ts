@@ -79,6 +79,19 @@ export const BookAttributes = Extension.create({
         },
       },
       {
+        types: ["listItem"],
+        attributes: {
+          value: {
+            default: null,
+            parseHTML: (element: HTMLElement) => element.getAttribute("value"),
+            renderHTML: (attributes: Record<string, unknown>) =>
+              typeof attributes.value === "string"
+                ? { value: attributes.value }
+                : {},
+          },
+        },
+      },
+      {
         types: ["image", "book_inline_image"],
         attributes: Object.fromEntries(
           ["srcset", "sizes", "width", "height", "loading", "decoding"].map((name) => [

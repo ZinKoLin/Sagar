@@ -130,6 +130,7 @@ test("failed validation lands in HTML view with a visible error, views stay usab
 });
 
 for (const proposal of [
+  '<p>Body with continued numbering</p><ol><li value="6"><p>မြန်မာစာ</p></li></ol>',
   "<p>Translated one.</p><p>Translated two.</p>",
   "<h2>Title</h2><p>Body with <em>emphasis</em> and မြန်မာ text.</p>",
   '<h1 class="title">မြန်မာပုံပြင်</h1><h3 class="subtitle"><em></em></h3><p>Body with မြန်မာစာ။</p>',
@@ -188,6 +189,9 @@ for (const proposal of [
       ).toBeNull();
       expect(container.querySelector(".rich-block, .chapter-editor")).not.toBeNull();
       expect(richButton?.disabled).toBe(false);
+      if (proposal.includes('value="6"')) {
+        expect(richEditor?.querySelector("li")?.getAttribute("value")).toBe("6");
+      }
       if (proposal.includes('class="subtitle"')) {
         expect(richEditor?.querySelector("h3")).toBeNull();
         expect(api?.draft?.html).not.toContain('class="subtitle"');

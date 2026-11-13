@@ -131,6 +131,61 @@ export async function cancelAiTranslation(jobId: string): Promise<void> {
   }
 }
 
+export type TranslationOutput = {
+  id: string;
+  html: string;
+  state: string;
+  createdAt: string;
+};
+
+export type AlignmentMatch = {
+  sourceIndex: number;
+  targetIndex: number;
+  sourceText: string;
+  targetText: string;
+  meaning: string;
+  grammarNote: string;
+};
+
+export async function alignTranslationSegments(input: {
+  chapterId: string;
+  sourceSentences: string[];
+  targetSentences: string[];
+  consent: boolean;
+}): Promise<AlignmentMatch[]> {
+  try {
+    return await invoke<AlignmentMatch[]>("align_translation_segments", {
+      chapterId: input.chapterId,
+      sourceSentences: input.sourceSentences,
+      targetSentences: input.targetSentences,
+      consent: input.consent,
+    });
+  } catch (error) {
+    throw toCommandError(error);
+  }
+}
+export async function getTranslationOutput(
+  chapterId: string,
+): Promise<TranslationOutput | null> {
+  try {
+    return await invoke<TranslationOutput | null>("get_translation_output", {
+      chapterId,
+    });
+  } catch (error) {
+    throw toCommandError(error);
+  }
+}
+export async function saveTranslationOutput(
+  chapterId: string,
+  html: string,
+): Promise<void> {
+  try {
+    await invoke("save_translation_output", { chapterId, html });
+  } catch (error) {
+    throw toCommandError(error);
+  }
+}
+
 /** Starts an HTML-fix run over the user's current draft HTML. */
 export async function startAiHtmlFix(input: {
   chapterId: string;

@@ -56,45 +56,41 @@ pub fn inspect(path: &Path) -> Result<ParsedEpub, AppError> {
     let parsed_opf = opf::parse_opf(&opf_bytes, &opf_path)?;
     warnings.extend(parsed_opf.warnings);
 
-    let toc = match &parsed_opf.nav_href {
-        Some(nav_href) => match archive.read_entry(nav_href) {
-            Ok(bytes) => match nav::parse_nav(&bytes, nav_href) {
-                Ok(entries) => entries,
-                Err(error) => {
-                    warnings.push(ImportWarning {
-                        code: "navigation_unreadable".into(),
-                        message: "The book's table of contents could not be read; \
-                                  chapter titles may fall back to headings."
-                            .into(),
-                        location: None,
-                    });
-                    let _ = error;
-                    Vec::new()
-                }
-            },
-            Err(error) => {
-                warnings.push(ImportWarning {
-                    code: "navigation_missing".into(),
-                    message: "The table of contents file is missing from the book; \
-                              chapter titles may fall back to headings."
-                        .into(),
-                    location: None,
-                });
-                let _ = error;
-                Vec::new()
+    let nav_toc = parsed_opf.nav_href.as_deref().and_then(|href| {
+        archive
+            .read_entry(href)
+            .ok()
+            .and_then(|bytes| nav::parse_nav(&bytes, href).ok())
+    });
+    let ncx_toc = parsed_opf.ncx_href.as_deref().and_then(|href| {
+        archive
+            .read_entry(href)
+            .ok()
+            .and_then(|bytes| nav::parse_ncx(&bytes, href).ok())
+    });
+    let toc = nav_toc.or(ncx_toc).unwrap_or_else(|| {
+        let has_navigation_resource = parsed_opf
+            .nav_href
+            .as_deref()
+            .is_some_and(|href| archive.contains(href))
+            || parsed_opf
+                .ncx_href
+                .as_deref()
+                .is_some_and(|href| archive.contains(href));
+        warnings.push(ImportWarning {
+            code: if has_navigation_resource {
+                "navigation_unreadable"
+            } else {
+                "navigation_missing"
             }
-        },
-        None => {
-            warnings.push(ImportWarning {
-                code: "navigation_missing".into(),
-                message: "This book has no EPUB 3 navigation document; chapter \
-                          titles may fall back to headings."
-                    .into(),
-                location: None,
-            });
-            Vec::new()
-        }
-    };
+            .into(),
+            message: "The book's table of contents could not be read; chapter \
+                      titles may fall back to headings."
+                .into(),
+            location: None,
+        });
+        Vec::new()
+    });
 
     let mut chapters = Vec::new();
     for (position, item) in parsed_opf.spine_items.iter().enumerate() {

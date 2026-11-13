@@ -430,12 +430,11 @@ mod tests {
         let saved_before: i64 = conn
             .query_row("SELECT COUNT(*) FROM chapter_documents", [], |r| r.get(0))
             .unwrap();
-        for previous in [None, Some("<p>မြန်မာ</p><p>unfinished")] {
-            let text = if previous.is_some() {
-                "<p>နှစ်</p>"
-            } else {
-                "<p>မြန်မာ</p><p>နှစ်</p>"
-            };
+        for (previous, text, expected_kind) in [
+            (None, "<p>မြန်မာ</p><p>နှစ်</p>", "done"),
+            (Some("<p>မြန်မာ</p><p>unfinished"), "<p>နှစ်</p>", "done"),
+            (None, "<p>မြန်မာ</p><p><i>နှစ်</i></p>", "needs_repair"),
+        ] {
             let (secret, server) = mock_server("200 OK", stream(text, "stop"), false);
             let provider = crate::services::ai::save_ai_custom_provider(
                 dir.path(),
@@ -467,14 +466,29 @@ mod tests {
             .unwrap();
             let terminal = loop {
                 let event = receive.recv_timeout(Duration::from_secs(5)).unwrap();
-                if event.kind == "done" || event.kind == "failed" {
+                if event.kind == "done" || event.kind == "failed" || event.kind == "needs_repair" {
                     break event;
                 }
             };
-            assert_eq!(terminal.kind, "done", "{}", terminal.message);
+            assert_eq!(terminal.kind, expected_kind, "{}", terminal.message);
+            if expected_kind == "done" {
+                assert_eq!(
+                    terminal.proposal_html.as_deref(),
+                    Some("<p>မြန်မာ</p><p>နှစ်</p>")
+                );
+            } else {
+                assert_eq!(terminal.partial_text.as_deref(), Some(text));
+            }
+            let retained = crate::services::ai_translate::get_translation_output(dir.path(), "c")
+                .unwrap()
+                .unwrap();
             assert_eq!(
-                terminal.proposal_html.as_deref(),
-                Some("<p>မြန်မာ</p><p>နှစ်</p>")
+                retained.html,
+                if previous.is_some() {
+                    format!("<p>မြန်မာ</p>{text}")
+                } else {
+                    text.to_string()
+                }
             );
             let request = server.join().unwrap();
             if previous.is_some() {

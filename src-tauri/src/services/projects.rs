@@ -61,6 +61,10 @@ pub fn list_chapters(data_dir: &Path, project_id: &str) -> Result<Vec<ChapterSum
         }
         for chapter in &mut chapters {
             if let Some(entry) = by_resource.get(chapter.resource_href.as_str()) {
+                // Navigation metadata may have been missing during an older
+                // import build. Re-derive the stored display title from the
+                // immutable EPUB snapshot when its nav/NCX becomes supported.
+                chapter.title = entry.title.clone();
                 chapter.navigation_groups = entry.groups.clone();
             }
         }

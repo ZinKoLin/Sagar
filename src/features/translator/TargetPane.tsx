@@ -10,7 +10,13 @@ import type { ChapterContent } from "../../types/chapter";
 import { AiFixHtmlDialog } from "./AiFixHtmlDialog";
 import { AiGenerateDialog } from "./AiGenerateDialog";
 import { ChapterEditor } from "./ChapterEditor";
-import { comparableDocument, hasContent, normalizeRichDocument } from "./richText";
+import {
+  comparableDocument,
+  describeRichTextMismatch,
+  hasContent,
+  localizeRichValidationError,
+  normalizeRichDocument,
+} from "./richText";
 import type { useChapterEditor } from "./useChapterEditor";
 
 /** Local validation normally resolves in milliseconds. Bound it so a hung
@@ -49,6 +55,7 @@ export function TargetPane({
   onRetry,
   onReloadAfterConflict,
   editor,
+  onOpenTranslation,
 }: {
   projectId: string;
   content: ChapterContent | null;
@@ -57,6 +64,7 @@ export function TargetPane({
   onRetry: () => void;
   onReloadAfterConflict: () => void;
   editor: ReturnType<typeof useChapterEditor>;
+  onOpenTranslation?: () => void;
 }) {
   // Scope readiness to the chapter instead of clearing it in a parent effect:
   // child mount effects can report readiness before that effect runs.
@@ -139,7 +147,7 @@ export function TargetPane({
       ) {
         setView("html");
         setViewError(
-          "This HTML cannot be represented faithfully in rich text. Your code is kept; continue editing it here or adjust its structure.",
+          `ဒီ HTML ကို Rich စာသားပုံစံသို့ ပြောင်းရာတွင် အစိတ်အပိုင်းတစ်ခု မတူညီသွားသည်။ ${describeRichTextMismatch(validated, roundTrip.innerHTML)} ဘာသာပြန်ထားသော HTML ကို သိမ်းထားပြီးဖြစ်သည်။ HTML မြင်ကွင်းတွင် ဆက်ပြင်နိုင်သည်၊ ဘာသာပြန်ရန် အစမှပြန်စရာမလိုပါ။`,
         );
         return;
       }
@@ -153,7 +161,7 @@ export function TargetPane({
       setView("html");
       setViewError(
         error instanceof Error
-          ? error.message
+          ? localizeRichValidationError(error.message)
           : "Check your HTML before switching to rich text.",
       );
     } finally {
@@ -227,7 +235,7 @@ export function TargetPane({
           disabled={!editor.draft || editor.draft.conflict}
           aria-label="Generate an AI translation proposal"
           title="Generate an AI translation proposal"
-          onClick={() => setAiOpen(true)}
+          onClick={() => (onOpenTranslation ? onOpenTranslation() : setAiOpen(true))}
         >
           <Icon name="sparkles" />
         </button>

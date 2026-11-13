@@ -11,6 +11,7 @@ pub enum CliProviderId {
     Opencode,
     ClaudeCode,
     Agy,
+    Grok,
 }
 
 impl CliProviderId {
@@ -20,6 +21,7 @@ impl CliProviderId {
             CliProviderId::Opencode => "opencode",
             CliProviderId::ClaudeCode => "claude_code",
             CliProviderId::Agy => "agy",
+            CliProviderId::Grok => "grok",
         }
     }
 
@@ -29,6 +31,7 @@ impl CliProviderId {
             CliProviderId::Opencode => "OpenCode",
             CliProviderId::ClaudeCode => "Claude Code",
             CliProviderId::Agy => "Antigravity (agy)",
+            CliProviderId::Grok => "Grok Build (account login)",
         }
     }
 
@@ -40,6 +43,7 @@ impl CliProviderId {
             CliProviderId::Opencode => &["opencode"],
             CliProviderId::ClaudeCode => &["claude"],
             CliProviderId::Agy => &["agy"],
+            CliProviderId::Grok => &["grok"],
         }
     }
 
@@ -49,16 +53,18 @@ impl CliProviderId {
             "opencode" => Some(CliProviderId::Opencode),
             "claude_code" => Some(CliProviderId::ClaudeCode),
             "agy" => Some(CliProviderId::Agy),
+            "grok" => Some(CliProviderId::Grok),
             _ => None,
         }
     }
 
-    pub fn all() -> [CliProviderId; 4] {
+    pub fn all() -> [CliProviderId; 5] {
         [
             CliProviderId::Codex,
             CliProviderId::Opencode,
             CliProviderId::ClaudeCode,
             CliProviderId::Agy,
+            CliProviderId::Grok,
         ]
     }
 }
@@ -169,7 +175,7 @@ pub struct AiTranslationStart {
 pub struct AiTranslationEvent {
     pub job_id: String,
     pub chapter_id: String,
-    /// `started` | `status` | `stream` | `done` | `failed` | `cancelled`.
+    /// `started` | `status` | `stream` | `done` | `needs_repair` | `failed` | `cancelled`.
     pub kind: String,
     pub proposal_html: Option<String>,
     /// Full-so-far translated text for `stream` events; text

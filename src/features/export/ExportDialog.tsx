@@ -6,6 +6,7 @@ import {
   exportEpub,
   pickExportDestination,
   reviewExport,
+  type BilingualAlignmentExport,
 } from "../../lib/tauri/commands";
 import type { ExportOutcome, ExportReview } from "../../types/chapter";
 import type { ProjectSummary } from "../../types/project";
@@ -17,6 +18,32 @@ type ExportDialogProps = {
   onFlushSaves: () => Promise<boolean>;
   onOutcome: (outcome: ExportOutcome) => void;
 };
+
+function cachedAlignmentsForChapter(chapterId: string): BilingualAlignmentExport[] {
+  try {
+    const value: unknown = JSON.parse(
+      localStorage.getItem(`sagar:bilingual-alignments:v2:${chapterId}`) ?? "null",
+    );
+    if (!value || typeof value !== "object" || !("matches" in value)) return [];
+    const matches = (value as { matches?: unknown }).matches;
+    if (!Array.isArray(matches)) return [];
+    return matches.filter(
+      (match): match is BilingualAlignmentExport =>
+        !!match &&
+        typeof match === "object" &&
+        "sourceText" in match &&
+        typeof match.sourceText === "string" &&
+        "targetText" in match &&
+        typeof match.targetText === "string" &&
+        "meaning" in match &&
+        typeof match.meaning === "string" &&
+        "grammarNote" in match &&
+        typeof match.grammarNote === "string",
+    );
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Export review dialog: metadata fields, actionable chapter counts and an
@@ -35,6 +62,7 @@ export function ExportDialog({
   const [languageError, setLanguageError] = useState<string | null>(null);
   const [draftAck, setDraftAck] = useState(false);
   const [includeOriginal, setIncludeOriginal] = useState(true);
+  const [bilingual, setBilingual] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
@@ -138,7 +166,7 @@ export function ExportDialog({
     setLanguageError(null);
     const fileBase = (title.trim() || review.title).replace(/[\\/:*?"<>|]/g, "_");
     const destination = await pickExportDestination(
-      `${fileBase}-${language.trim()}.epub`,
+      `${fileBase}-${language.trim()}${bilingual ? "-bilingual" : ""}.epub`,
     );
     if (destination === null) {
       return; // Save dialog cancelled.
@@ -152,6 +180,14 @@ export function ExportDialog({
         title.trim() === "" ? null : title.trim(),
         language.trim(),
         mode === "draft" ? includeOriginal : true,
+        bilingual,
+        bilingual
+          ? Object.fromEntries(
+              review.chapters
+                .map((chapter) => [chapter.chapterId, cachedAlignmentsForChapter(chapter.chapterId)] as const)
+                .filter(([, matches]) => matches.length > 0),
+            )
+          : {},
       );
       onOutcome(outcome);
     } catch (error) {
@@ -253,6 +289,21 @@ export function ExportDialog({
                   />
                   <span>Include original content for untranslated chapters.</span>
                 </label>
+              ) : null}
+              <label className="export-ack">
+                <input
+                  type="checkbox"
+                  checked={bilingual}
+                  onChange={(event) => setBilingual(event.target.checked)}
+                />
+                <span>
+                  Export a bilingual EPUB (original {review.sourceLanguage ?? "source"} followed by translation).
+                </span>
+              </label>
+              {bilingual ? (
+                <p className="dialog__muted">
+                  Previously analyzed word colors and meaning notes are included when available. Open each chapter in the bilingual reader first to analyze it.
+                </p>
               ) : null}
               <div className="export-summary">
                 <span className="export-chip export-chip--success">

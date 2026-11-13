@@ -130,6 +130,7 @@ fn fallback_directories_for(home: &Path) -> Vec<PathBuf> {
     let mut directories = Vec::new();
     for relative in [
         ".opencode/bin",
+        ".grok/bin",
         ".local/bin",
         "bin",
         ".cargo/bin",
@@ -1227,6 +1228,30 @@ fn parse_agy_models(text: &str) -> Vec<TranslationModel> {
         .collect()
 }
 
+fn parse_grok_models(text: &str) -> Vec<TranslationModel> {
+    let mut seen = HashSet::new();
+    text.lines()
+        .filter_map(|line| {
+            let id = line
+                .trim()
+                .trim_start_matches(['*', '-', ' '])
+                .split_whitespace()
+                .next()?;
+            let id = clean_model_id(id).filter(|id| id.starts_with("grok-"))?;
+            if !seen.insert(id.clone()) {
+                return None;
+            }
+            Some(TranslationModel {
+                label: id.clone(),
+                id,
+                detail: None,
+                reasoning_efforts: None,
+            })
+        })
+        .take(MAX_MODELS)
+        .collect()
+}
+
 /// Parses an OpenAI-compatible `/models` body (`{ data: [{ id }] }`).
 fn parse_openai_model_list(body: &serde_json::Value) -> Vec<TranslationModel> {
     let mut models = Vec::new();
@@ -1305,6 +1330,23 @@ fn find_cli_or_unavailable(id: CliProviderId) -> Result<PathBuf, AppError> {
     })
 }
 
+fn opencode_model_output(binary: &Path) -> Option<std::process::Output> {
+    // v1 exposes variants with --verbose. v2 removed that flag and
+    // supports a private server, avoiding a stalled background service.
+    for args in [
+        &["models", "--verbose"][..],
+        &["models", "--standalone"][..],
+        &["models"][..],
+    ] {
+        if let Ok(output) = run_cli_output(binary, args, MODEL_LIST_TIMEOUT)
+            && output.status.success()
+        {
+            return Some(output);
+        }
+    }
+    None
+}
+
 pub fn list_translation_models(
     data_dir: &Path,
     agent: &str,
@@ -1315,6 +1357,25 @@ pub fn list_translation_models(
         return Err(invalid_agent());
     };
     match parsed {
+        TranslationAgent::Cli(CliProviderId::Grok) => {
+            let binary = find_cli_or_unavailable(CliProviderId::Grok)?;
+            if let Ok(output) =
+                run_cli_output(&binary, &["--no-auto-update", "models"], MODEL_LIST_TIMEOUT)
+                && output.status.success()
+            {
+                let models = parse_grok_models(&String::from_utf8_lossy(&output.stdout));
+                if !models.is_empty() {
+                    return Ok(TranslationModelList { agent: "grok".into(), source: "live".into(), models,
+                        message: "Model list from Grok Build. Model listing does not verify your account access.".into() });
+                }
+            }
+            Ok(TranslationModelList {
+                agent: "grok".into(),
+                source: "catalog".into(),
+                models: known_models(&[("grok-4.6", "Grok 4.6"), ("grok-4.5", "Grok 4.5"), ("grok-4.7", "Grok 4.7")]),
+                message: "Grok Build catalog; sign in with grok login. Enter another model ID supported by your account if needed.".into(),
+            })
+        }
         TranslationAgent::Cli(CliProviderId::Codex) => {
             let binary = find_cli_or_unavailable(CliProviderId::Codex)?;
             // Offline-first: the bundled catalog needs no network.
@@ -1345,9 +1406,9 @@ pub fn list_translation_models(
         }
         TranslationAgent::Cli(CliProviderId::Opencode) => {
             let binary = find_cli_or_unavailable(CliProviderId::Opencode)?;
-            // No `--refresh`: reads the local cache, so this stays offline.
-            match run_cli_output(&binary, &["models", "--verbose"], MODEL_LIST_TIMEOUT) {
-                Ok(output) if output.status.success() => {
+            // Never refresh the provider cache or send chapter content here.
+            match opencode_model_output(&binary) {
+                Some(output) => {
                     let models = parse_opencode_models(&String::from_utf8_lossy(&output.stdout));
                     if models.is_empty() {
                         Ok(TranslationModelList {
@@ -1471,6 +1532,47 @@ pub fn set_translation_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grok_provider_identity_discovery_and_selection() {
+        let models = parse_grok_models(
+            "Default model: grok-4.6\nAvailable models:\n * grok-4.6 (default)\n - grok-4.5\n - grok-4.6\n",
+        );
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            vec!["grok-4.6", "grok-4.5"]
+        );
+        assert_eq!(CliProviderId::parse("grok"), Some(CliProviderId::Grok));
+        assert!(CliProviderId::all().contains(&CliProviderId::Grok));
+        let home = tempfile::tempdir().unwrap();
+        assert!(fallback_directories_for(home.path()).contains(&home.path().join(".grok/bin")));
+        let selection = set_translation_selection(home.path(), "grok", "grok-4.7", None).unwrap();
+        assert_eq!(selection.agent, "grok");
+        assert_eq!(
+            get_translation_selection(home.path())
+                .unwrap()
+                .unwrap()
+                .model,
+            "grok-4.7"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn opencode_v2_catalog_falls_back_to_standalone() {
+        let dir = tempfile::tempdir().unwrap();
+        let cli = dir.path().join("opencode.cmd");
+        // Reproduce v2 rejecting --verbose and its broken shared service.
+        std::fs::write(
+            &cli,
+            "@echo off\r\nif \"%2\"==\"--verbose\" exit /b 1\r\nif not \"%2\"==\"--standalone\" exit /b 2\r\necho opencode/example-model\r\n",
+        )
+        .unwrap();
+        let output = opencode_model_output(&cli).expect("private server fallback");
+        let models = parse_opencode_models(&String::from_utf8_lossy(&output.stdout));
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "opencode/example-model");
+    }
 
     #[test]
     fn agy_models_selection_and_discovery() {

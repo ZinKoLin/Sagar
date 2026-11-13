@@ -6,6 +6,7 @@ pub mod ai_translate;
 pub mod documents;
 pub mod migrations;
 pub mod projects;
+pub mod translation_outputs;
 pub mod translations;
 
 use std::path::Path;

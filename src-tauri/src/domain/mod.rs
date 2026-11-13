@@ -12,8 +12,8 @@ pub use ai::{
     TranslationModel, TranslationModelList, TranslationSelection,
 };
 pub use chapter::{
-    BlockView, ChapterContent, ChapterDocument, ChapterImage, ChapterReview, ExportOutcome,
-    ExportReview, SaveResult,
+    BilingualAlignment, BlockView, ChapterContent, ChapterDocument, ChapterImage, ChapterReview,
+    ExportOutcome, ExportReview, SaveResult,
 };
 pub use project::{
     ChapterSummary, CoverImage, ImportResult, ImportWarning, ProjectSummary, strip_fragment,

@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { DOMParser as ProseMirrorParser, DOMSerializer } from "@tiptap/pm/model";
 import { Window } from "happy-dom";
 import { Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
@@ -11,7 +12,7 @@ import {
 } from "../../src/features/translator/bookStructure";
 import { BookAttributes } from "../../src/features/translator/bookAttributes";
 import { BookAnchor } from "../../src/features/translator/bookAnchor";
-import { comparableDocument, documentFragment, normalizeRichDocument } from "../../src/features/translator/richText";
+import { comparableDocument, documentFragment, localizeRichValidationError, normalizeRichDocument } from "../../src/features/translator/richText";
 import { runSlashCommand } from "../../src/features/translator/useSlashMenu";
 
 const window = new Window();
@@ -59,6 +60,18 @@ test("Rich normalization drops empty decoration but preserves anchors, semantics
   }
 });
 
+test("comparison accepts only a harmless paragraph wrapper around a standalone anchor", () => {
+  expect(comparableDocument('<a id="target">Section</a>')).toBe(
+    comparableDocument('<p><a id="target">Section</a></p>'),
+  );
+  expect(comparableDocument('<a id="target">Section</a>')).not.toBe(
+    comparableDocument("<p>Section</p>"),
+  );
+  expect(comparableDocument('<a id="one">Section</a>')).not.toBe(
+    comparableDocument('<p><a id="two">Section</a></p>'),
+  );
+});
+
 test("Rich normalizes mixed book containers, bare lists and plain table cells", () => {
   const examples = [
     '<div>Before <em>မြန်မာ</em><p>Middle</p>After <strong>စာ</strong></div>',
@@ -66,6 +79,10 @@ test("Rich normalizes mixed book containers, bare lists and plain table cells", 
     '<ul><li>မြန်မာ <small>စာ</small></li><li>Two</li></ul>',
     '<blockquote>Quoted <cite>မြန်မာစာ</cite></blockquote>',
     '<table><tbody><tr><td>မြန်မာ <abbr title="Meaning">စာ</abbr></td></tr></tbody></table>',
+    '<br/><p>After the standalone break</p>',
+    '<p>Before the standalone break</p><br/>',
+    '<p>Inline break<br/>stays inside its paragraph</p>',
+    '<div>Before a block break<br/>After a block break</div>',
     '<p aria-describedby="note">Text <small>small</small> <kbd>key</kbd><samp>output</samp><var>x</var><dfn>term</dfn><mark>mark</mark></p>',
   ];
   for (const html of examples) {
@@ -84,8 +101,59 @@ test("Rich normalizes mixed book containers, bare lists and plain table cells", 
   }
 });
 
-test("Protected tables retain assets and links without mounting them in the editor", () => {
-  const html = '<p>Before</p><table><caption>Caption</caption><thead><tr><th id="heading">မြန်မာ</th></tr></thead><tbody><tr><td><a href="https://example.com">Link</a><img src="image.png" alt="Asset"/></td></tr></tbody><tfoot><tr><td>Foot</td></tr></tfoot></table><p>After</p>';
+test("Rich view conversion preserves standalone breaks at the document root", () => {
+  const html = normalizeRichDocument("<br/><p>After</p>");
+  const editor = createEditor("");
+  try {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    const parsed = ProseMirrorParser.fromSchema(editor.schema).parse(wrapper, {
+      preserveWhitespace: true,
+    });
+    const roundTrip = document.createElement("div");
+    roundTrip.append(
+      DOMSerializer.fromSchema(editor.schema).serializeFragment(parsed.content),
+    );
+    expect(comparableDocument(roundTrip.innerHTML)).toBe(comparableDocument(html));
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("Rich view keeps standalone breaks as siblings inside EPUB containers", () => {
+  const html = normalizeRichDocument(
+    "<div><p>Before</p><br/><p>After</p></div>",
+  );
+  const editor = createEditor("");
+  try {
+    const wrapper = document.createElement("div");
+    wrapper.innerHTML = html;
+    const parsed = ProseMirrorParser.fromSchema(editor.schema).parse(wrapper, {
+      preserveWhitespace: true,
+    });
+    const roundTrip = document.createElement("div");
+    roundTrip.append(
+      DOMSerializer.fromSchema(editor.schema).serializeFragment(parsed.content),
+    );
+    expect(comparableDocument(roundTrip.innerHTML)).toBe(comparableDocument(html));
+    expect(roundTrip.innerHTML).toContain("<br");
+    expect(roundTrip.innerHTML).not.toContain("<p><br");
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("table validation errors identify the bad tag and preserve the saved HTML", () => {
+  const message = localizeRichValidationError(
+    "A table row can contain only <td> or <th> cells. Found <p> inside <tr>.",
+  );
+  expect(message).toContain("<p>");
+  expect(message).toContain("<tr>");
+  expect(message).toContain("HTML ကို မဖျက်ထားပါ");
+});
+
+test("Protected tables retain assets, links and column groups without mounting them in the editor", () => {
+  const html = '<p>Before</p><table><colgroup span="2"><col width="50%"/><col style="width:25%"/></colgroup><caption>Caption</caption><thead><tr><th id="heading">မြန်မာ</th></tr></thead><tbody><tr><td><a href="https://example.com">Link</a><img src="image.png" alt="Asset"/></td></tr></tbody><tfoot><tr><td>Foot</td></tr></tfoot></table><p>After</p>';
   const editor = createEditor(html);
   try {
     expect(comparableDocument(editor.getHTML())).toBe(comparableDocument(html));
@@ -98,6 +166,7 @@ test("Protected tables retain assets and links without mounting them in the edit
     expect(comparableDocument(editor.getHTML())).toBe(comparableDocument(saved));
     expect(saved).toContain('src="image.png"');
     expect(saved).toContain('id="heading"');
+    expect(saved).toContain('<colgroup span="2"><col width="50%"/><col style="width:25%"/></colgroup>');
   } finally { editor.destroy(); }
 });
 
@@ -124,6 +193,48 @@ test("Translated titlepage links remain editable without added paragraphs", asyn
     const edited = documentFragment(editor.getHTML());
     editor.commands.setContent(edited, { parseOptions: { preserveWhitespace: true } });
     expect(comparableDocument(editor.getHTML())).toBe(comparableDocument(edited));
+  } finally {
+    editor.destroy();
+  }
+});
+
+test("standalone root links remain block anchors beside chapter blocks", () => {
+  for (const anchor of [
+    '<a href="kindle:embed:0003?mime=image/jpg"><img src="cover.jpg" alt="Cover"/></a>',
+    '<a id="target">Section target</a>',
+    '<a>Unadorned standalone anchor</a>',
+  ]) {
+    const normalized = normalizeRichDocument(`<p>Before</p>${anchor}<p>After</p>`);
+    const editor = createEditor(normalized);
+    try {
+      expect(comparableDocument(editor.getHTML())).toBe(comparableDocument(normalized));
+      expect(normalized).toContain("</p><a");
+      expect(normalized).not.toContain("</p><p><a");
+      let preservedLink = false;
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === "book_block_link") preservedLink = true;
+      });
+      expect(preservedLink).toBe(true);
+    } finally {
+      editor.destroy();
+    }
+  }
+});
+
+test("TOC links retain Kindle embed and relative hrefs inside paragraphs", () => {
+  const html = '<div class="page_top_padding" id="page-top"><h1 class="calibre5" id="calibre_pb_0">မာတိကာ</h1><div class="toc_fm"><p class="toc_fm1"><a href="kindle:embed:0003?mime=image/jpg" class="calibre1">မျက်နှာဖုံး</a></p><p class="toc_fm1"><a href="../Text/part0001_split_000.html#d2-d2s1" class="calibre1">အခန်းတစ်</a></p></div></div>';
+  const normalized = normalizeRichDocument(html);
+  const editor = createEditor(normalized);
+  try {
+    expect(comparableDocument(editor.getHTML())).toBe(comparableDocument(normalized));
+    expect(editor.getHTML()).toContain('href="kindle:embed:0003?mime=image/jpg"');
+    expect(editor.getHTML()).toContain('href="../Text/part0001_split_000.html#d2-d2s1"');
+    expect(editor.getHTML()).toContain('class="calibre1"');
+    let links = 0;
+    editor.state.doc.descendants((node) => {
+      if (node.type.name === "book_inline_link") links += 1;
+    });
+    expect(links).toBe(2);
   } finally {
     editor.destroy();
   }
@@ -156,9 +267,12 @@ test("Empty subtitle formatting survives Rich parsing, typing and reload", async
 });
 
 for (const [label, html] of [
+  ["continued list numbering", '<ol class="steps"><li class="first" value="6"><p>မြန်မာ <i class="BOLD_ITAL">စာ</i><span epub:type="pagebreak" id="page_148" role="doc-pagebreak" title="148"></span></p></li><li value="12"><p>နောက်</p></li></ol>'],
   ["imprint", '<section class="imprint" id="imprint" epub:type="imprint" xmlns:epub="http://www.idpf.org/2007/ops"><header><h2 epub:type="title">ထုတ်ဝေမှု</h2><img src="logo.png" srcset="logo-2x.png 2x, logo.png 1x" sizes="100vw" alt="Logo"/></header><p>မြန်မာ <a href="uncopyright.xhtml">စာ</a></p></section>'],
   ["inline semantics", '<p><span class="small"><b>မြန်မာ</b> <i>စာ</i></span><sup id="note">1</sup><sub>2</sub><code>text</code><ruby>字<rt>ji</rt><rp>(</rp></ruby></p>'],
   ["inline image", '<p>Before <img src="a.png" alt="A" srcset="a.png 1x, b.png 2x"/> after</p>'],
+  ["standalone image", '<div><p>Before</p><img src="cover.png" alt="Cover" srcset="cover@2x.png 2x"/><p>After</p></div>'],
+  ["image without source", '<figure><img alt="Decorative cover"/><figcaption>Caption</figcaption></figure>'],
   ["blockquote and code", '<blockquote id="quote"><p>မြန်မာ <code class="sample">x &lt; y</code></p></blockquote><pre id="sample"><code>one\n  two &amp; three</code></pre>'],
   ["definition list", '<dl><dt>Term</dt><dd><p>Meaning</p></dd></dl><pre>one\n  two</pre>'],
   ["SVG", '<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 10 10"><g><title>Cover</title><image xlink:href="cover.png"/><path d="M0 0L10 10"/></g></svg><p>မြန်မာ</p>'],
@@ -190,8 +304,20 @@ test("SVG node view never mounts imported executable content", () => {
   try {
     expect(editor.view.dom.querySelector("svg, script")).toBeNull();
     expect(editor.getHTML()).not.toContain("<script");
-    expect(editor.view.dom.textContent).toContain("SVG artwork");
+    expect(editor.view.dom.textContent).toContain("SVG ပုံကို ထိန်းသိမ်းထားသည်");
   } finally { editor.destroy(); }
+});
+
+test("standalone images stay intact without loading imported image resources", () => {
+  const html = '<div><p>Before</p><img src="cover.png" alt="Cover" srcset="cover@2x.png 2x"/><p>After</p></div>';
+  const editor = createEditor(html);
+  try {
+    expect(comparableDocument(editor.getHTML())).toBe(comparableDocument(html));
+    expect(editor.view.dom.querySelector("img")).toBeNull();
+    expect(editor.view.dom.textContent).toContain("Cover");
+  } finally {
+    editor.destroy();
+  }
 });
 
 test("Cell align attributes round-trip verbatim without injected styles", () => {

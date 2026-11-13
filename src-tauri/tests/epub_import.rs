@@ -246,6 +246,8 @@ fn large_book_import_export_sweep() {
             title: None,
             language: None,
             include_original: true,
+            bilingual: false,
+            bilingual_alignments: std::collections::HashMap::new(),
         },
     )
     .expect("large export");
@@ -505,6 +507,47 @@ fn chapters_without_nav_fall_back_to_headings() {
             .warnings
             .iter()
             .any(|w| w.code == "navigation_missing")
+    );
+}
+
+#[test]
+fn epub2_ncx_provides_navigation_without_epub3_nav_warning() {
+    let dir = tempdir();
+    let data_dir = tempdir();
+    let epub2_opf = opf(
+        "<itemref idref=\"c1\"/>",
+        "<item id=\"c1\" href=\"c1.xhtml\" media-type=\"application/xhtml+xml\"/>\
+         <item id=\"ncx\" href=\"toc.ncx\" media-type=\"application/x-dtbncx+xml\"/>",
+    )
+    .replace("version=\"3.0\"", "version=\"2.0\"")
+    .replace(
+        "<item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>",
+        "",
+    )
+    .replace("<spine>", "<spine toc=\"ncx\">");
+    let ncx = br#"<?xml version="1.0"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><navMap><navPoint id="c1"><navLabel><text>NCX Chapter Name</text></navLabel><content src="c1.xhtml"/></navPoint></navMap></ncx>"#;
+    let files = vec![
+        ("mimetype".to_string(), b"application/epub+zip".to_vec()),
+        (
+            "META-INF/container.xml".to_string(),
+            CONTAINER.as_bytes().to_vec(),
+        ),
+        ("OEBPS/content.opf".to_string(), epub2_opf.into_bytes()),
+        ("OEBPS/toc.ncx".to_string(), ncx.to_vec()),
+        (
+            "OEBPS/c1.xhtml".to_string(),
+            chapter_doc("Heading fallback", "<p>Body text.</p>").into_bytes(),
+        ),
+    ];
+    let source = write_epub(&dir, "epub2-ncx.epub", &as_pairs(&files));
+
+    let result = services::import::import_epub(&data_dir, &source, false)
+        .expect("EPUB 2 with NCX should import");
+    assert_eq!(result.chapters[0].title, "NCX Chapter Name");
+    assert!(
+        !result.warnings.iter().any(|warning| {
+            matches!(warning.code.as_str(), "epub_version" | "navigation_missing")
+        })
     );
 }
 
@@ -807,6 +850,9 @@ fn existing_epub2_project_gets_ncx_volume_groups_without_reimport() {
     let imported = services::import::import_epub(&data, &source, false).expect("import");
     let reopened = services::projects::list_chapters(&data, &imported.project.id).expect("reopen");
     assert!(reopened[0].navigation_groups.is_empty());
+    assert_eq!(reopened[0].title, "Volume 1");
+    assert_eq!(reopened[1].title, "Chapter 1");
+    assert_eq!(reopened[2].title, "Chapter 2");
     assert_eq!(reopened[1].navigation_groups[0].title, "Volume 1");
     assert_eq!(
         reopened[2].navigation_groups[0].resource.as_deref(),

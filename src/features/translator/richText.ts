@@ -101,6 +101,8 @@ export function documentFragment(html: string): string {
     const allowed = [
       "p",
       "table",
+      "colgroup",
+      "col",
       "thead",
       "tbody",
       "tfoot",
@@ -193,6 +195,8 @@ export function documentFragment(html: string): string {
                 ]
               : tag === "table"
                 ? ["border", "cellpadding", "cellspacing", "width", "align"]
+                : tag === "colgroup" || tag === "col"
+                  ? ["span", "width"]
                 : tag === "ol" || tag === "ul"
                   ? ["start", "type"]
                   : tag === "li"
@@ -215,6 +219,7 @@ export function documentFragment(html: string): string {
         "img",
         "hr",
         "source",
+        "col",
         "image",
         "path",
         "rect",
@@ -263,10 +268,10 @@ export function normalizeRichDocument(html: string): string {
       element.remove();
   }
   const blocks =
-    "p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,hr,table,thead,tbody,tfoot,tr,td,th,caption,div,section,article,main,header,footer,aside,figure,figcaption,pre,dl,dt,dd,svg,picture";
+    "p,h1,h2,h3,h4,h5,h6,ul,ol,li,blockquote,br,hr,table,colgroup,thead,tbody,tfoot,tr,td,th,caption,div,section,article,main,header,footer,aside,figure,figcaption,pre,dl,dt,dd,svg,picture,a";
   for (const parent of Array.from(
     doc.querySelectorAll(
-      "body,ul,ol,table,thead,tbody,tfoot,tr,div,section,article,main,header,footer,aside,figure,figcaption,dd,li,blockquote,td,th",
+      "body,ul,ol,table,colgroup,thead,tbody,tfoot,tr,div,section,article,main,header,footer,aside,figure,figcaption,dd,li,blockquote,td,th",
     ),
   )) {
     if (Array.from(parent.children).some((child) => child.matches(blocks))) {
@@ -326,6 +331,24 @@ export function normalizeRichDocument(html: string): string {
 /** Compare structural content without code indentation between block elements. */
 export function comparableDocument(html: string): string {
   const document = new DOMParser().parseFromString(html, "text/html");
+  // ProseMirror requires inline nodes at the document root to live in a block
+  // and may serialize a standalone EPUB anchor as <p><a>…</a></p>. Treat only
+  // that exact, attribute-free wrapper as equivalent; the anchor and all its
+  // attributes/content must still match, so this cannot hide a dropped link.
+  for (const paragraph of Array.from(document.body.querySelectorAll("p"))) {
+    const meaningful = Array.from(paragraph.childNodes).filter(
+      (node) =>
+        node.nodeType !== Node.TEXT_NODE ||
+        (node.textContent ?? "").trim() !== "",
+    );
+    if (
+      paragraph.attributes.length === 0 &&
+      meaningful.length === 1 &&
+      meaningful[0] instanceof Element &&
+      meaningful[0].matches("a")
+    )
+      paragraph.replaceWith(meaningful[0]);
+  }
   for (const element of document.querySelectorAll("[style]")) {
     if (element instanceof HTMLElement)
       element.setAttribute("style", element.style.cssText);
@@ -339,4 +362,37 @@ export function comparableDocument(html: string): string {
     }
   }
   return documentFragment(document.body.innerHTML);
+}
+
+/** Describe the first structural mismatch without exposing chapter text. */
+export function describeRichTextMismatch(source: string, converted: string): string {
+  const left = comparableDocument(source);
+  const right = comparableDocument(converted);
+  let offset = 0;
+  while (offset < left.length && offset < right.length && left[offset] === right[offset])
+    offset += 1;
+  const tagAt = (html: string) => {
+    const opening = html.lastIndexOf("<", offset);
+    const closing = html.indexOf(">", opening);
+    if (opening < 0 || closing < 0) return "document";
+    const match = /^<\/?([a-z][a-z0-9:-]*)/i.exec(html.slice(opening, closing + 1));
+    return match?.[1]?.toLowerCase() ?? "document";
+  };
+  const expected = tagAt(left);
+  const actual = tagAt(right);
+  return expected === actual
+    ? `<${expected}> အတွင်းရှိ attribute သို့မဟုတ် စာရင်းပုံစံ မတူညီနေသည်။`
+    : `သိမ်းထားသော HTML တွင် <${expected}> ဖြစ်ပြီး Rich စာသားတွင် <${actual}> ဖြစ်နေသည်။`;
+}
+
+/** Give table-validation failures a repair hint without exposing book text. */
+export function localizeRichValidationError(message: string): string {
+  if (!/table|column group|row group/i.test(message)) return message;
+  const found = /Found <([a-z][a-z0-9:-]*)> inside <([a-z][a-z0-9:-]*)>\./i.exec(
+    message,
+  );
+  const detail = found
+    ? ` <${found[1]}> ကို <${found[2]}> အတွင်း တွေ့ရှိပါတယ်။`
+    : "";
+  return `ဇယားဖွဲ့စည်းပုံ မကိုက်ညီပါ။${detail} HTML မြင်ကွင်းမှာ ဇယားတစ်ခုစီတွင် အတန်း (<tr>)၊ အတန်းတစ်ခုစီတွင် အချက်အလက်ဆဲလ် (<td>) သို့မဟုတ် ခေါင်းစဉ်ဆဲလ် (<th>) ပါရှိကြောင်း စစ်ဆေးပြီး Rich စာသားမြင်ကွင်းကို ပြန်ဖွင့်ပါ။ သိမ်းထားတဲ့ HTML ကို မဖျက်ထားပါ။`;
 }

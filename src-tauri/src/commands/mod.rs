@@ -1,12 +1,14 @@
 //! Thin Tauri command adapters. Business logic lives in `services`; commands
 //! only translate between the WebView and service calls.
 
+use std::collections::HashMap;
+
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::domain::{
-    AiProviderList, AiTranslationEvent, AiTranslationStart, ChapterContent, ChapterSummary,
-    CliCheckResult, CoverImage, CustomProviderSummary, CustomTestResult, ExportOutcome,
-    ExportReview, ImportResult, ProjectSummary, SaveResult, TranslationModelList,
+    AiProviderList, AiTranslationEvent, AiTranslationStart, BilingualAlignment, ChapterContent,
+    ChapterSummary, CliCheckResult, CoverImage, CustomProviderSummary, CustomTestResult,
+    ExportOutcome, ExportReview, ImportResult, ProjectSummary, SaveResult, TranslationModelList,
     TranslationSelection,
 };
 use crate::error::AppError;
@@ -167,6 +169,8 @@ pub async fn export_epub(
     title: Option<String>,
     language: Option<String>,
     include_original: Option<bool>,
+    bilingual: Option<bool>,
+    bilingual_alignments: Option<HashMap<String, Vec<BilingualAlignment>>>,
 ) -> Result<ExportOutcome, AppError> {
     let data_dir = app_data_dir(&app)?;
     run_blocking(move || {
@@ -179,6 +183,8 @@ pub async fn export_epub(
                 title,
                 language,
                 include_original: include_original.unwrap_or(true),
+                bilingual: bilingual.unwrap_or(false),
+                bilingual_alignments: bilingual_alignments.unwrap_or_default(),
             },
         )
     })
@@ -363,6 +369,52 @@ pub async fn start_ai_translation(
 #[tauri::command]
 pub async fn cancel_ai_translation(job_id: String) -> Result<(), AppError> {
     services::ai_translate::cancel_ai_translation(&job_id)
+}
+
+#[tauri::command]
+pub async fn align_translation_segments(
+    app: AppHandle,
+    chapter_id: String,
+    source_sentences: Vec<String>,
+    target_sentences: Vec<String>,
+    consent: bool,
+) -> Result<Vec<services::ai_translate::AlignmentMatch>, AppError> {
+    let data_dir = app_data_dir(&app)?;
+    run_blocking(move || {
+        services::ai_translate::align_translation_segments(
+            &data_dir,
+            services::ai_translate::AlignTranslationInput {
+                chapter_id,
+                source_sentences,
+                target_sentences,
+                consent,
+            },
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn get_translation_output(
+    app: AppHandle,
+    chapter_id: String,
+) -> Result<Option<crate::storage::translation_outputs::TranslationOutput>, AppError> {
+    let data_dir = app_data_dir(&app)?;
+    run_blocking(move || services::ai_translate::get_translation_output(&data_dir, &chapter_id))
+        .await
+}
+
+#[tauri::command]
+pub async fn save_translation_output(
+    app: AppHandle,
+    chapter_id: String,
+    html: String,
+) -> Result<(), AppError> {
+    let data_dir = app_data_dir(&app)?;
+    run_blocking(move || {
+        services::ai_translate::save_translation_output(&data_dir, &chapter_id, &html)
+    })
+    .await
 }
 
 /// AI HTML repair. The run sends the user's current draft HTML to the chosen
