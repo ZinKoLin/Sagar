@@ -202,6 +202,23 @@ pub fn latest_version() -> i64 {
 /// Safe to call repeatedly: already-applied scripts are skipped.
 pub fn apply(conn: &mut Connection) -> Result<i64, AppError> {
     let mut version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    // Older builds used version 10 for translation_outputs instead of the
+    // selection schema. Preserve those outputs and install the missing schema
+    // before version 11 tries to alter ai_selection_runs.
+    if version == 10 {
+        let legacy: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='translation_outputs') AND NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='ai_selection_runs')",
+            [],
+            |row| row.get(0),
+        )?;
+        if legacy {
+            let tx = crate::storage::begin_write(&mut *conn)?;
+            for (_, script) in MIGRATIONS.iter().filter(|(target, _)| *target == 10) {
+                tx.execute_batch(script)?;
+            }
+            tx.commit()?;
+        }
+    }
     for (target, script) in MIGRATIONS {
         let target = *target;
         if target <= version {
@@ -285,6 +302,34 @@ mod book_settings_migration_tests {
             .query_row("SELECT revision FROM chapter_documents", [], |r| r.get(0))
             .expect("draft");
         assert_eq!(revision, 4);
+    }
+}
+
+#[cfg(test)]
+mod legacy_v10_tests {
+    use super::*;
+
+    #[test]
+    fn legacy_outputs_survive_selection_schema_upgrade() {
+        let mut conn = Connection::open_in_memory().expect("db");
+        for (_, sql) in MIGRATIONS.iter().filter(|(version, _)| *version <= 9) {
+            conn.execute_batch(sql).expect("prior schema");
+        }
+        conn.execute_batch("CREATE TABLE translation_outputs(id TEXT PRIMARY KEY, chapter_id TEXT, html TEXT, state TEXT, created_at TEXT);
+            INSERT INTO translation_outputs VALUES('saved','chapter','<p>မြန်မာစာ</p>','ready','now');
+            PRAGMA user_version=10;").expect("legacy schema");
+        assert_eq!(apply(&mut conn).expect("upgrade"), latest_version());
+        assert_eq!(apply(&mut conn).expect("repeat"), latest_version());
+        let html: String = conn
+            .query_row(
+                "SELECT html FROM translation_outputs WHERE id='saved'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("saved output");
+        assert_eq!(html, "<p>မြန်မာစာ</p>");
+        conn.prepare("SELECT deleted_at FROM ai_selection_runs")
+            .expect("selection schema");
     }
 }
 

@@ -27,3 +27,5 @@ dist-ssr
 # to src-tauri/sagarnet.json locally; the release workflow writes it from the
 # SAGARNET_CONFIG secret.
 src-tauri/sagarnet.json
+/.venv-sagar-bridge/
+__pycache__/
