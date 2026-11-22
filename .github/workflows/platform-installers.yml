@@ -1,0 +1,76 @@
+name: Sagar and AI Studio installers
+
+on:
+  push:
+    branches: [ai-studio-installers]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  installers:
+    name: ${{ matrix.name }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS Apple Silicon
+            os: macos-15
+            artifact: macos-arm64
+            bundles: dmg
+          - name: macOS Intel
+            os: macos-15-intel
+            artifact: macos-x64
+            bundles: dmg
+          - name: Linux x64
+            os: ubuntu-22.04
+            artifact: linux-x64
+            bundles: deb,appimage
+          - name: Linux ARM64
+            os: ubuntu-22.04-arm
+            artifact: linux-arm64
+            bundles: deb,appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+          shared-key: ${{ matrix.artifact }}-installers
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Install frontend and bridge dependencies
+        run: |
+          bun install --frozen-lockfile
+          python -m pip install -r scripts/sagar-ai-studio-requirements.txt pyinstaller
+      - name: Prepare local connection defaults
+        run: cp src-tauri/sagarnet.example.json src-tauri/sagarnet.json
+      - name: Build and smoke test native browser bridge
+        run: python scripts/package-browser-bridge.py
+      - name: Build desktop installers with bridge resources
+        env:
+          NO_STRIP: "true"
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: bun tauri build --bundles ${{ matrix.bundles }} --config .installer-build/tauri-config.json -- --locked
+      - name: Upload native installers and standalone bridge
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sagar-${{ matrix.artifact }}
+          retention-days: 30
+          if-no-files-found: error
+          include-hidden-files: true
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.AppImage
+            .installer-build/Sagar-AI-Studio-Bridge-*.zip

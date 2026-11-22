@@ -1,5 +1,23 @@
 # AI Studio browser bridge
 
+## Prebuilt installers
+
+The Windows MSI installs Sagar and a **Sagar AI Studio Bridge** Start menu
+shortcut. For macOS, install the DMG and extract the matching bridge ZIP,
+then open **Start Bridge.command**. For Linux, install the DEB or open the
+AppImage, extract the matching bridge ZIP, and run **start-bridge.sh**.
+Keep the entire extracted bridge folder together. These bridge packages
+include Python and its dependencies.
+
+The first launch downloads Camoufox and opens Google AI Studio for sign-in.
+Use the connection fields below to connect Sagar. The bridge key is stored at
+`%LOCALAPPDATA%\SagarAIStudioBridge\bridge.key` on Windows and
+`~/SagarAIStudioBridge/bridge.key` on macOS and Linux.
+These local builds are unsigned. Clean-machine native installation and UI
+behavior must be checked on each target OS.
+
+## Run from source
+
 Run the commands from the Sagar repository root in PowerShell.
 
 ```powershell

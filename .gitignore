@@ -29,3 +29,4 @@ dist-ssr
 src-tauri/sagarnet.json
 /.venv-sagar-bridge/
 __pycache__/
+/.installer-build/

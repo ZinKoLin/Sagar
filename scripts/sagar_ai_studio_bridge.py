@@ -1,6 +1,7 @@
 """Loopback OpenAI-compatible adapter for a visible AI Studio browser."""
 
 import asyncio
+import argparse
 import hmac
 import json
 import os
@@ -229,4 +230,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check-installation", action="store_true",
+                        help="Check bundled Python dependencies without opening a browser.")
+    args = parser.parse_args()
+    if args.check_installation:
+        from camoufox.async_api import AsyncCamoufox
+        import language_tags
+        print("AI Studio bridge runtime is ready.")
+    else:
+        main()
